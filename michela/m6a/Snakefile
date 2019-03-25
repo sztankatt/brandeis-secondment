@@ -1,8 +1,24 @@
 configfile: "config.yaml"
 
 raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
+
+# kallisto settings
+kallisto_abundance_suffix = 'abundance.tsv'
+kallisto_output_dir = config['dirs']['data_out'] + '/kallisto_quant/{sample}/' 
+kallisto_quant_output = kallisto_output_dir + kallisto_abundance_suffix
+
+# star settings
 star_suffix = 'Aligned.sortedByCoord.out.bam'
+star_output_dir = config['dirs']['data_out'] + '/mapping'
+star_output_prefix = star_output_dir + '/{sample}.'
+star_output = star_output_prefix + star_suffix
+star_err_file = star_output_prefix + 'stderr.txt'
+
+# esat settings
 esat_suffixes = ['window.txt', 'gene.txt']
+esat_output_dir = config['dirs']['data_out'] + '/esat'
+esat_output_prefix = esat_output_dir + '/{sample}'
+esat_output = [esat_output_prefix + '.' + suffix for suffix in esat_suffixes]
 
 subworkflow load_shared:
 	workdir:
@@ -14,17 +30,18 @@ subworkflow load_shared:
 
 rule all:
 	input:
-		expand('kallisto_quant/{sample}/abundance.tsv', sample=config['samples']),
-		expand('esat/{sample}.{esat_suffix}', esat_suffix=esat_suffixes, sample=config['samples'])
+		# kallisto output
+		expand(kallisto_quant_output, sample=config['samples']),
+		expand(esat_output, sample=config['samples'])
 
 rule kallisto_quant:
 	input:
 		index= load_shared('indices/kallisto/dm6.kallisto.index'),
 		reads= raw_read_pattern
 	output:
-		'kallisto_quant/{sample}/abundance.tsv'
+		kallisto_quant_output
 	params:
-		output_dir= 'kallisto_quant/{sample}'
+		output_dir= kallisto_output_dir
 	threads: 8
 	shell:
 		"kallisto quant -i {input.index} -o {params.output_dir} --bias --plaintext --fr-stranded --single -l 100.0 -s 1.0 -t {threads} {input.reads}"
@@ -34,12 +51,12 @@ rule map_with_star:
 		reads= raw_read_pattern,
 		index= config['dirs']['ix']['star']
 	output:
-		"mapping/{sample}." + star_suffix
+		star_output
 	threads: 8
 	params:
-		mapping_dir= 'mapping',
-		out_prefix= 'mapping/{sample}.',
-		err_file= 'mapping/{sample}.stderr.txt'
+		mapping_dir= star_output_dir,
+		out_prefix= star_output_prefix,
+		err_file= star_err_file
 	shell:
 		"""
 		mkdir -p {params.mapping_dir}
@@ -55,16 +72,15 @@ rule map_with_star:
 
 rule run_esat:
 	input:
-		"mapping/{sample}." + star_suffix
+		star_output
 	output:
-		"esat/{sample}.gene.txt",
-		"esat/{sample}.window.txt"
+		esat_output
 	params:
 		annotation= config['dirs']['annotations']['bed'],
-		out_prefix= "esat/{sample}"
+		out_prefix= esat_output_prefix 
 	shell:
 		"""
-		mkdir -p esat
+		mkdir -p data/esat
 
 		esat 	-in {input} \
 				-annotations {params.annotation} \
