@@ -1,0 +1,73 @@
+configfile: "config.yaml"
+
+raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
+star_suffix = 'Aligned.sortedByCoord.out.bam'
+esat_suffixes = ['window.txt', 'gene.txt']
+
+subworkflow load_shared:
+	workdir:
+		"../../shared"
+	snakefile:
+		"../../shared/Snakefile"
+	configfile:
+		"../../shared/config.yaml"
+
+rule all:
+	input:
+		expand('kallisto_quant/{sample}/abundance.tsv', sample=config['samples']),
+		expand('esat/{sample}.{esat_suffix}', esat_suffix=esat_suffixes, sample=config['samples'])
+
+rule kallisto_quant:
+	input:
+		index= load_shared('indices/kallisto/dm6.kallisto.index'),
+		reads= raw_read_pattern
+	output:
+		'kallisto_quant/{sample}/abundance.tsv'
+	params:
+		output_dir= 'kallisto_quant/{sample}'
+	threads: 8
+	shell:
+		"kallisto quant -i {input.index} -o {params.output_dir} --bias --plaintext --fr-stranded --single -l 100.0 -s 1.0 -t {threads} {input.reads}"
+
+rule map_with_star:
+	input:
+		reads= raw_read_pattern,
+		index= config['dirs']['ix']['star']
+	output:
+		"mapping/{sample}." + star_suffix
+	threads: 8
+	params:
+		mapping_dir= 'mapping',
+		out_prefix= 'mapping/{sample}.',
+		err_file= 'mapping/{sample}.stderr.txt'
+	shell:
+		"""
+		mkdir -p {params.mapping_dir}
+
+		STAR    --runThreadN {threads} \
+				--outFileNamePrefix {params.out_prefix} \
+				--runMode alignReads \
+				--genomeDir {input.index} \
+				--readFilesIn {input.reads} \
+				--readFilesCommand zcat \
+				--outSAMtype BAM SortedByCoordinate	2>{params.err_file}
+		"""
+
+rule run_esat:
+	input:
+		"mapping/{sample}." + star_suffix
+	output:
+		"esat/{sample}.gene.txt",
+		"esat/{sample}.window.txt"
+	params:
+		annotation= config['dirs']['annotations']['bed'],
+		out_prefix= "esat/{sample}"
+	shell:
+		"""
+		mkdir -p esat
+
+		esat 	-in {input} \
+				-annotations {params.annotation} \
+				-out {params.out_prefix}
+		"""
+		

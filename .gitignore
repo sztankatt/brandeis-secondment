@@ -1,0 +1,15 @@
+# ignore shared dir
+shared/*
+
+# do not ignore Snakefile and config
+!shared/Snakefile
+!shared/config.yaml
+
+# ignore read and alignment data
+michela/m6a/data
+
+# ignore all log files
+*.log*
+
+# ignore all snakemake files
+*.snakemake

@@ -1,0 +1,22 @@
+configfile: "config.yaml"
+
+rule all:
+	input:
+		"transcriptomes/dm6.fa.gz",
+		"indices/kallisto/dm6.kallisto.index"
+
+rule download_transcriptome:
+	params:
+		url=lambda wildcard: config['links']['transcriptomes'][wildcard.sp]
+	output:
+		"transcriptomes/{sp}.fa.gz"
+	shell:
+		"wget -x -O {output} {params.url}"
+
+rule create_kallisto_index:
+	input:
+		config['dirs']['tx'] + "{sp}.fa.gz"
+	output:
+		config['dirs']['ix']['kallisto'] + "{sp}.kallisto.index"
+	shell:
+		"kallisto index -i {output} {input}"
