@@ -1,0 +1,66 @@
+--- 
+title: "m6a analysis"
+author: "tsztank"
+date: "`r format(Sys.time(), '%d/%B/%Y')`"
+output:
+  html_document:
+    theme: journal
+---
+
+```{r knitr_options, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(
+  cache = T,
+  autodep = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = NA,
+  cache.path = 'cache/',
+  fig.path = 'figures/')
+```
+
+```{r load_libraries, echo = F}
+library(plyr)
+library(tidyverse)
+library(biomaRt)
+library(magrittr)
+library(yaml)
+library(readr)
+```
+
+```{r get_gene_name_id_map, echo = F}
+ensembl = useMart('ensembl', dataset = 'dmelanogaster_gene_ensembl')
+listFilters(ensembl)[20:30,]
+
+genes <- ensembl %>%
+	getBM(
+		  attributes = c('ensembl_gene_id',
+						 'ensembl_transcript_id',
+						 'external_gene_name',
+						 'external_transcript_name'),
+		  mart = .) %>%
+	as_tibble
+
+colnames(genes) <- c('gene_id', 'tx_id', 'gene_name', 'tx_name') 
+```
+
+```{r load_kallisto_results, echo = F}
+config = read_yaml('../../config.yaml')
+samples <- config$samples
+
+kallisto_dir = '../../data/kallisto_quant/'
+
+kallisto_data <- samples %>% ldply(function(smpl){
+		df <- read_table2(paste0(kallisto_dir, '/', smpl, '/abundance.tsv'))
+		df$sample <- smpl
+
+		df
+	}) %>% 
+	as_tibble %>%
+	separate(sample, into = c('condition', 'replicate'), sep = '[_]') %>%
+	rename(tx_id = target_id) %>%
+	mutate(tx_id = as.factor(tx_id),
+		   condition = as.factor(condition),
+		   replicate = as.integer(replicate))
+```
+
+
