@@ -1,0 +1,8 @@
+# ignore cache
+cache
+
+# ignore figures
+figures
+
+# ignore the output html generated
+*.html

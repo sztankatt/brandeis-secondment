@@ -13,3 +13,4 @@ michela/m6a/data
 
 # ignore all snakemake files
 *.snakemake
+
