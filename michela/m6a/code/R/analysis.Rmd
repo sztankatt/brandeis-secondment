@@ -25,11 +25,13 @@ library(biomaRt)
 library(magrittr)
 library(yaml)
 library(readr)
+library(cowplot)
+library(wesanderson)
+library(GGally)
 ```
 
 ```{r get_gene_name_id_map, echo = F}
 ensembl = useMart('ensembl', dataset = 'dmelanogaster_gene_ensembl')
-listFilters(ensembl)[20:30,]
 
 genes <- ensembl %>%
 	getBM(
@@ -59,8 +61,51 @@ kallisto_data <- samples %>% ldply(function(smpl){
 	separate(sample, into = c('condition', 'replicate'), sep = '[_]') %>%
 	rename(tx_id = target_id) %>%
 	mutate(tx_id = as.factor(tx_id),
-		   condition = as.factor(condition),
-		   replicate = as.integer(replicate))
+		   condition = as.factor(condition)) %>%
+	left_join(genes, by = 'tx_id')
 ```
 
+```{r plot_corr_between_runs, echo = F, eval = F}
+kallisto_data %>%
+	unite('run', condition, replicate) %>%
+	dplyr::select(tx_id, run, tpm) %>%
+	spread(run, tpm) %>%
+	{
+		ggpairs(., columns = 2:ncol(.))
+	}
+```
+
+```{r plot_histogram_tpm, echo =F}
+kallisto_data %>%
+	ggplot(aes(tpm, fill = condition)) +
+	geom_density(alpha = 0.8) +
+	scale_x_log10() +
+	scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+	ggtitle('TPM comparison between conditions')
+```
+
+```{r plot_histogram_counts, echo =F}
+kallisto_data %>%
+	ggplot(aes(est_counts, fill = condition)) +
+	geom_density(alpha = 0.8) +
+	scale_x_log10() +
+	scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+	facet_grid(condition~replicate) +
+	theme(axis.text.x = element_text(angle = 45, hjust =1)) +
+	ggtitle('Estimated counts of each run')
+```
+
+```{r plot_genes_of_interest, echo = F}
+genes_of_interest <- c('mbl', 'vri', 'Clk', 'tim')
+
+kallisto_data %>%
+	filter(gene_name %in% genes_of_interest) %>%
+	group_by(gene_name, condition, replicate) %>%
+	summarise(tpm = sum(tpm)) %>%
+	ggplot(aes(gene_name, tpm, colour = condition, shape = replicate)) +
+		geom_point(size = 4, position = position_dodge(width=0.3)) +
+		scale_y_log10() +
+		annotation_logticks(sides = 'l') +
+		scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
+```
 
