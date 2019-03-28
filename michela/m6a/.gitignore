@@ -4,5 +4,6 @@ cache
 # ignore figures
 figures
 
-# ignore the output html generated
+# ignore the output html generated, and pdf files
 *.html
+*.pdf

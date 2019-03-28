@@ -2,7 +2,7 @@
 title: "m6a analysis"
 author: "tsztank"
 date: "`r format(Sys.time(), '%d/%B/%Y')`"
-output:
+output: 
   html_document:
     theme: journal
 ---
@@ -18,7 +18,7 @@ knitr::opts_chunk$set(
   fig.path = 'figures/')
 ```
 
-```{r load_libraries, echo = F}
+```{r load_libraries, echo = F, cache = F}
 library(plyr)
 library(tidyverse)
 library(biomaRt)
@@ -28,7 +28,13 @@ library(readr)
 library(cowplot)
 library(wesanderson)
 library(GGally)
+library(DESeq2)
+library(tximport)
 ```
+
+## Sanity checks
+
+The if we plot the counts and tpm-s (transcript per million) on a log-x scale, we observe a normal distribution which is expected. Also, the mean values of tpm-s are comparable, so it seems there is not big difference between the libraries of the 3 conditions sequenced.
 
 ```{r get_gene_name_id_map, echo = F}
 ensembl = useMart('ensembl', dataset = 'dmelanogaster_gene_ensembl')
@@ -59,7 +65,7 @@ kallisto_data <- samples %>% ldply(function(smpl){
 	}) %>% 
 	as_tibble %>%
 	separate(sample, into = c('condition', 'replicate'), sep = '[_]') %>%
-	rename(tx_id = target_id) %>%
+	dplyr::rename(tx_id = target_id) %>%
 	mutate(tx_id = as.factor(tx_id),
 		   condition = as.factor(condition)) %>%
 	left_join(genes, by = 'tx_id')
@@ -95,17 +101,104 @@ kallisto_data %>%
 	ggtitle('Estimated counts of each run')
 ```
 
-```{r plot_genes_of_interest, echo = F}
-genes_of_interest <- c('mbl', 'vri', 'Clk', 'tim')
+## Looking at genes of interest
 
-kallisto_data %>%
-	filter(gene_name %in% genes_of_interest) %>%
-	group_by(gene_name, condition, replicate) %>%
-	summarise(tpm = sum(tpm)) %>%
-	ggplot(aes(gene_name, tpm, colour = condition, shape = replicate)) +
-		geom_point(size = 4, position = position_dodge(width=0.3)) +
-		scale_y_log10() +
-		annotation_logticks(sides = 'l') +
-		scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
+First lets look at 3 genes: Clk, tim and vri.
+
+It seems that for these 3 genes, IgG\_3 is an outlier.
+
+```{r plot_genes_of_interest, echo = F}
+genes_of_interest <- c('vri', 'Clk', 'tim')
+
+plot_genes <- function(kallisto_data, genes){
+	kallisto_data %>%
+		filter(gene_name %in% genes) %>%
+		group_by(gene_name, condition, replicate) %>%
+		dplyr::summarise(tpm = sum(tpm)) %>%
+		ggplot(aes(gene_name, tpm, colour = condition, shape = replicate)) +
+			geom_point(size = 4, position = position_dodge(width=0.3)) +
+			scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
+}
+
+plot_genes(kallisto_data, genes_of_interest)
 ```
+
+Lets look at Mbl separately. Here we again can observe that IgG\_3 is an outlier compared to others.
+
+```{r plot_mbl_tpm, echo = F}
+plot_genes(kallisto_data, c('mbl'))
+```
+
+```{r plot_correlation_between_replicates, echo = F, eval =F}
+get_cor_plot <- function(kallisto_data, sx, sy){
+	dat <- kallisto_data %>%
+		unite('run', condition, replicate) %>%
+		dplyr::select(tx_id, run, tpm) %>%
+		spread(run, tpm)
+
+	r <- cor(dat[[sx]], dat[[sy]])
+
+	pl <- dat %>%
+		# convert tpm to log for visualization
+		gather('run', 'tpm', -tx_id) %>%
+		mutate(tpm = log10(tpm)) %>%
+		spread(run, tpm) %>%
+		ggplot(aes_string(x=sx, y=sy)) +
+			geom_point()
+
+	pl <- pl + annotate("text", Inf, -Inf, label = paste0('R = ', round(r, 3)), hjust = 2, vjust = -10)
+
+	pl
+}
+
+get_cor_plot(kallisto_data, 'IgG_3', 'IgG_2')
+```
+
+
+```{r prepare_deseq_de_analysis, echo = F}
+tx2gene <- genes %>%
+	transmute(TXNAME = tx_id,
+			  GENEID = gene_id)
+
+kallisto_metadata <- tibble(sample = samples) %>%
+	separate(sample, into = c('condition', 'replicate', 'rnd'), remove = F) %>%
+	# remove randomly generated suffix
+	dplyr::select(-rnd) %>%
+	mutate(path = paste0(kallisto_dir, sample),
+		   condition = factor(condition, levels = c('input', 'IgG', 'IP'))) %>%
+	# sort tibble by factor
+	arrange(condition)
+
+txi <- kallisto_metadata %>%
+	mutate(files = paste0(path, '/abundance.tsv')) %>%
+	{
+		files <- .$files
+		names(files) <- .$sample 
+		tximport(files, type = 'kallisto', tx2gene = tx2gene, ignoreAfterBar = T)
+	}
+
+dds <- DESeqDataSetFromTximport(txi, as.data.frame(kallisto_metadata), ~condition)
+```
+
+### PCA analysis
+
+From the below PCA plot we can clearly see, that IgG\_3 is an outlier. For further analysis, it is therefore probably better to not take it into account.
+
+```{r pca_analysis, echo = F}
+vsd <- vst(dds, blind=FALSE)
+pca <- plotPCA(vsd, intgroup=c('condition', 'replicate'), returnData=T) %>%
+	as_tibble
+
+pca %>%
+	# modify factor level to have consistent colors
+	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%
+	ggplot(aes(PC1, PC2, colour = condition, shape = replicate)) + 
+	geom_point(size = 4) +
+	scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
+
+```
+
+## TODO
+
+- Run DESeq2 Differential Expression pipeline to check for enriched genes in IP.
 
