@@ -3,7 +3,7 @@ configfile: "config.yaml"
 raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
 
 # kallisto settings
-kallisto_abundance_suffix = 'abundance.tsv'
+kallisto_abundance_suffix = 'abundance.h5'
 kallisto_output_dir = config['dirs']['data_out'] + '/kallisto_quant/{sample}/' 
 kallisto_quant_output = kallisto_output_dir + kallisto_abundance_suffix
 
@@ -44,7 +44,7 @@ rule kallisto_quant:
 		output_dir= kallisto_output_dir
 	threads: 8
 	shell:
-		"kallisto quant -i {input.index} -o {params.output_dir} --bias --plaintext --fr-stranded --single -l 100.0 -s 1.0 -t {threads} {input.reads}"
+		"kallisto quant -i {input.index} -o {params.output_dir} --bias --fr-stranded --single -l 100.0 -s 1.0 -t {threads} {input.reads}"
 
 rule map_with_star:
 	input:
@@ -76,14 +76,15 @@ rule run_esat:
 	output:
 		esat_output
 	params:
-		annotation= config['dirs']['annotations']['bed'],
+		annotation= '../../shared/annotation/gene2transcript.txt',
 		out_prefix= esat_output_prefix 
 	shell:
 		"""
 		mkdir -p data/esat
 
 		esat 	-in {input} \
-				-annotations {params.annotation} \
-				-out {params.out_prefix}
+				-geneMapping {params.annotation} \
+				-out {params.out_prefix} \
+				-task score3p
 		"""
 		
