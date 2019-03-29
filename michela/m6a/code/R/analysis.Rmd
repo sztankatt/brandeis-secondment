@@ -32,6 +32,10 @@ library(DESeq2)
 library(tximport)
 ```
 
+# Kallisto
+
+First we calculated the transcript counts with using kallisto (ref needed). This, instead of mapping the reads creates pseudo-counts with building a probabilistic model.
+
 ## Sanity checks
 
 The if we plot the counts and tpm-s (transcript per million) on a log-x scale, we observe a normal distribution which is expected. Also, the mean values of tpm-s are comparable, so it seems there is not big difference between the libraries of the 3 conditions sequenced.
@@ -44,11 +48,16 @@ genes <- ensembl %>%
 		  attributes = c('ensembl_gene_id',
 						 'ensembl_transcript_id',
 						 'external_gene_name',
-						 'external_transcript_name'),
+						 'external_transcript_name',
+						 'start_position', 
+						 'end_position', 
+						 'strand'),
 		  mart = .) %>%
 	as_tibble
 
-colnames(genes) <- c('gene_id', 'tx_id', 'gene_name', 'tx_name') 
+colnames(genes) <- c('gene_id', 'tx_id', 'gene_name', 'tx_name', 'gene_start', 'gene_end', 'strand') 
+
+genes <- genes %>% mutate(gene_length = gene_end - gene_start)
 ```
 
 ```{r load_kallisto_results, echo = F}
@@ -101,32 +110,102 @@ kallisto_data %>%
 	ggtitle('Estimated counts of each run')
 ```
 
+### PCA analysis
+
+```{r load_kallist_counts, echo = F}
+tx2gene <- genes %>%
+	transmute(TXNAME = tx_id,
+			  GENEID = gene_id)
+
+kallisto_metadata <- tibble(sample = samples) %>%
+	separate(sample, into = c('condition', 'replicate', 'rnd'), remove = F) %>%
+	# remove randomly generated suffix
+	dplyr::select(-rnd) %>%
+	mutate(path = paste0(kallisto_dir, sample),
+		   condition = factor(condition, levels = c('input', 'IgG', 'IP'))) %>%
+	# sort tibble by factor
+	arrange(condition)
+
+txi <- kallisto_metadata %>%
+	mutate(files = paste0(path, '/abundance.tsv')) %>%
+	{
+		files <- .$files
+		names(files) <- .$sample 
+		tximport(files, type = 'kallisto', tx2gene = tx2gene, ignoreAfterBar = T)
+	}
+
+dds <- DESeqDataSetFromTximport(txi, as.data.frame(kallisto_metadata), ~condition)
+```
+
+From the below PCA plot we can clearly see, that IgG\_3 is an outlier. For further analysis, it is therefore probably better to not take it into account.
+
+```{r pca_analysis, echo = F}
+vsd <- vst(dds, blind=FALSE)
+pca <- plotPCA(vsd, intgroup=c('condition', 'replicate'), returnData=T) %>%
+	as_tibble
+
+pca %>%
+	# modify factor level to have consistent colors
+	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%
+	ggplot(aes(PC1, PC2, colour = condition, shape = replicate)) + 
+	geom_point(size = 4) +
+	scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
+
+```
+
 ## Looking at genes of interest
 
 First lets look at 3 genes: Clk, tim and vri.
 
 It seems that for these 3 genes, IgG\_3 is an outlier.
 
-```{r plot_genes_of_interest, echo = F}
+```{r convert_counts_to_tpm, echo = F}
+# create counts on the gene level
+gene_counts <- txi$counts %>% 
+	# get counts and load them as dataframe
+	as.data.frame %>%
+	# convert rownames to a column
+	rownames_to_column(var = 'gene_id') %>%
+	# convert to tibble
+	as_tibble %>%
+	# join with metadata about genes and txs
+	left_join(genes %>%
+			  	dplyr::select(-tx_id, -tx_name) %>%
+				unique,
+			  by = 'gene_id') %>%
+	# create column for run and counts
+	gather('run', 'count', samples) %>%
+	# separate the run column and drop random overhang
+	separate(run, into = c('condition', 'replicate'), extra = 'drop') %>%
+	# group by condition and replicate
+	group_by(condition, replicate) %>%
+	# calculate tpm
+	mutate(tpm = count / gene_length,
+		   tpm = tpm / sum(tpm) * 1e6)
+```
+
+
+```{r plot_genes_of_interest, echo = F, fig.width = 10, fig.height = 5}
 genes_of_interest <- c('vri', 'Clk', 'tim')
 
-plot_genes <- function(kallisto_data, genes){
-	kallisto_data %>%
+plot_genes <- function(tpm, genes, x_lab, metric = 'tpm'){
+	tpm %>%
 		filter(gene_name %in% genes) %>%
-		group_by(gene_name, condition, replicate) %>%
-		dplyr::summarise(tpm = sum(tpm)) %>%
-		ggplot(aes(gene_name, tpm, colour = condition, shape = replicate)) +
+		ggplot(aes_string(x_lab, metric, colour = 'condition', shape = 'replicate')) +
 			geom_point(size = 4, position = position_dodge(width=0.3)) +
 			scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
 }
 
-plot_genes(kallisto_data, genes_of_interest)
+pl1 <- plot_genes(gene_counts, genes_of_interest, x_lab = 'gene_name', metric = 'tpm')
+pl2 <- plot_genes(gene_counts, genes_of_interest, x_lab = 'gene_name', metric = 'count')
+
+plot_grid(pl1, pl2, ncol = 2)
 ```
 
 Lets look at Mbl separately. Here we again can observe that IgG\_3 is an outlier compared to others.
 
 ```{r plot_mbl_tpm, echo = F}
-plot_genes(kallisto_data, c('mbl'))
+plot_genes(gene_counts, c('mbl'), x_lab = 'gene_name', metric = 'tpm')
 ```
 
 ```{r plot_correlation_between_replicates, echo = F, eval =F}
@@ -155,19 +234,9 @@ get_cor_plot(kallisto_data, 'IgG_3', 'IgG_2')
 ```
 
 
-```{r prepare_deseq_de_analysis, echo = F}
-tx2gene <- genes %>%
-	transmute(TXNAME = tx_id,
-			  GENEID = gene_id)
-
-kallisto_metadata <- tibble(sample = samples) %>%
-	separate(sample, into = c('condition', 'replicate', 'rnd'), remove = F) %>%
-	# remove randomly generated suffix
-	dplyr::select(-rnd) %>%
-	mutate(path = paste0(kallisto_dir, sample),
-		   condition = factor(condition, levels = c('input', 'IgG', 'IP'))) %>%
-	# sort tibble by factor
-	arrange(condition)
+```{r update_deseq_preparation, echo = F}
+kallisto_metadata <- kallisto_metadata %>%
+	filter(condition != 'IgG'| replicate != 3)
 
 txi <- kallisto_metadata %>%
 	mutate(files = paste0(path, '/abundance.tsv')) %>%
@@ -177,26 +246,86 @@ txi <- kallisto_metadata %>%
 		tximport(files, type = 'kallisto', tx2gene = tx2gene, ignoreAfterBar = T)
 	}
 
-dds <- DESeqDataSetFromTximport(txi, as.data.frame(kallisto_metadata), ~condition)
+ddsTxi <- DESeqDataSetFromTximport(txi, as.data.frame(kallisto_metadata), ~condition)
 ```
 
-### PCA analysis
+```{r run_deseq2, echo = F}
+# pre-filter counts
+#keep <- rowSums(counts(dds)) >= 10
+#
+#dds <- dds[keep,]
 
-From the below PCA plot we can clearly see, that IgG\_3 is an outlier. For further analysis, it is therefore probably better to not take it into account.
+# run DESeq
+dds <- DESeq(ddsTxi)
 
-```{r pca_analysis, echo = F}
-vsd <- vst(dds, blind=FALSE)
-pca <- plotPCA(vsd, intgroup=c('condition', 'replicate'), returnData=T) %>%
-	as_tibble
-
-pca %>%
-	# modify factor level to have consistent colors
-	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%
-	ggplot(aes(PC1, PC2, colour = condition, shape = replicate)) + 
-	geom_point(size = 4) +
-	scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
-
+res <- results(dds, contrast = c('condition', 'IP', 'input'), alpha = 0.05)
 ```
+
+```{r get_de_genes, echo = F}
+gene_id2name <- genes %>%
+	transmute(gene_name = gene_name, 
+			  gene_id = gene_id) %>%
+	unique
+
+
+res.df <- res %>%
+	as.data.frame %>%
+	rownames_to_column(var = 'gene_id') %>%
+	as_tibble %>%
+	inner_join(gene_id2name, by = 'gene_id')
+```
+
+```{r plot_volcano_plot, echo = F}
+res.df %>%
+	ggplot(aes(log2FoldChange, -log10(padj))) +
+		geom_point()
+```
+
+# ESAT
+
+ESAT (ref) is a counting toolkit designed for short 3' or 5' libraries. As a check, we also mapped the reads with STAR and then counted the reads on the gene level with ESAT, and correlated the results with counts coming from kallisto+tximport
+
+```{r import_esat_counts, echo = F}
+esat_dir = '../../data/esat/'
+esat_counts <- samples %>%
+	# create a dataframe out of counts
+	data.frame(sample = .) %>%
+	# create a filename column, and load dataframes as a list
+	mutate(filename = paste0(esat_dir, sample, '.gene.txt'), 
+		   file_contents = map(filename, ~read_table2(.))) %>%
+	# expand the lists
+	unnest() %>%
+	# create tibble
+	as_tibble %>%
+	# rename columns
+	transmute(sample = sample,
+			  gene_name = Symbol,
+			  esat_count = Exp1) %>%
+	separate(sample, into = c('condition', 'replicate'), extra = 'drop')
+
+
+combined_counts <- gene_counts %>%
+	inner_join(esat_counts, by = c('condition', 'replicate', 'gene_name'))
+```
+
+```{r calculate_count_correlation_esat_kallisto, echo = F}
+kallisto_vs_esat <- ddply(combined_counts, .(condition, replicate), function(tb){
+	data.frame(correlation = cor(tb$count, tb$esat_count))
+})
+
+kallisto_vs_esat %>% kable
+```
+
+```{r plot_kallisto_vs_esat, echo = F, eval = F}
+combined_counts %>%
+	rename(count = 'kallisto_count') %>%
+	ggplot(aes(kallisto_count, esat_count)) +
+		geom_point() +
+		scale_y_log10() +
+		scale_x_log10() +
+		facet_grid(condition ~ replicate)
+```
+
 
 ## TODO
 
