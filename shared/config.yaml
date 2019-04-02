@@ -1,6 +1,8 @@
 links:
   transcriptomes:
     dm6: "ftp://ftp.ensembl.org/pub/release-95/fasta/drosophila_melanogaster/cds/Drosophila_melanogaster.BDGP6.cds.all.fa.gz" 
+  chrom.sizes:
+    dm6: "https://hgdownload-test.gi.ucsc.edu/goldenPath/dm6/bigZips/dm6.chrom.sizes"
 dirs:
   genome: '/bardata1/inespatop/genomes/raw/dm6/'
   tx: 'transcriptomes/'

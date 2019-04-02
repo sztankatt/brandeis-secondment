@@ -13,12 +13,18 @@ star_output_dir = config['dirs']['data_out'] + '/mapping'
 star_output_prefix = star_output_dir + '/{sample}.'
 star_output = star_output_prefix + star_suffix
 star_err_file = star_output_prefix + 'stderr.txt'
+indexed_bam_output = star_output + '.bai'
 
 # esat settings
 esat_suffixes = ['window.txt', 'gene.txt']
 esat_output_dir = config['dirs']['data_out'] + '/esat'
 esat_output_prefix = esat_output_dir + '/{sample}'
 esat_output = [esat_output_prefix + '.' + suffix for suffix in esat_suffixes]
+
+
+fastqc_suffixes = ['.zip', '.html']
+fastqc_output_dir = 'fastqc'
+fastqc_output = [fastqc_output_dir + '/m6A_{sample}_R2_001_fastqc' + suffix for suffix in fastqc_suffixes]
 
 subworkflow load_shared:
 	workdir:
@@ -32,7 +38,10 @@ rule all:
 	input:
 		# kallisto output
 		expand(kallisto_quant_output, sample=config['samples']),
-		expand(esat_output, sample=config['samples'])
+		expand(esat_output, sample=config['samples']),
+		expand(fastqc_output, sample=config['samples']),
+		expand('data/bigwig/{sample}.bw', sample=config['samples']),
+		expand(indexed_bam_output, sample=config['samples'])
 
 rule kallisto_quant:
 	input:
@@ -44,7 +53,7 @@ rule kallisto_quant:
 		output_dir= kallisto_output_dir
 	threads: 8
 	shell:
-		"kallisto quant -i {input.index} -o {params.output_dir} --bias --fr-stranded --single -l 100.0 -s 1.0 -t {threads} {input.reads}"
+		"kallisto quant -i {input.index} -o {params.output_dir} --single --single-overhang --fr-stranded -l 400.0 -s 200.0 -t 8 {input.reads}"
 
 rule map_with_star:
 	input:
@@ -70,6 +79,16 @@ rule map_with_star:
 				--outSAMtype BAM SortedByCoordinate	2>{params.err_file}
 		"""
 
+rule create_indexed_bam_file:
+	input:
+		star_output
+	output:
+		indexed_bam_output
+	shell:
+		"""
+		samtools index {input} {output}
+		"""
+
 rule run_esat:
 	input:
 		star_output
@@ -88,3 +107,47 @@ rule run_esat:
 				-task score3p
 		"""
 		
+rule create_fastqc:
+	input:
+		raw_read_pattern,
+	output:
+		fastqc_output
+	params:
+		fastqc_dir= fastqc_output_dir
+	threads: 8
+	shell:
+		"""
+		mkdir -p {params.fastqc_dir}
+
+		fastqc -t {threads} -o {params.fastqc_dir} {input}
+		"""
+
+rule create_bedgraph:
+	input:
+		star_output
+	output:
+		temp('{sample}.bedGraph')
+	shell:
+		"""
+		bedtools genomecov -ibam {input} -bga -split > {output}
+		"""
+
+rule sort_bedgraph:
+	input:
+		'{sample}.bedGraph'
+	output:
+		temp('{sample}.sorted.bedGraph')
+	shell:
+		'sort -k1,1 -k2,2n < {input} > {output}'
+
+rule create_bigwig:
+	input:
+		chrom_sizes= load_shared('chrom_sizes/dm6.chrom.sizes'),
+		bedgraph= '{sample}.sorted.bedGraph'
+	output:
+		'data/bigwig/{sample}.bw'
+	shell:
+		"""
+		mkdir -p data/bigwig
+		bedGraphToBigWig {input.bedgraph} {input.chrom_sizes} {output}
+		"""

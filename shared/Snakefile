@@ -13,6 +13,14 @@ rule download_transcriptome:
 	shell:
 		"wget -x -O {output} {params.url}"
 
+rule download_chrom_sizes:
+	params:
+		url=lambda wildcard: config['links']['chrom.sizes'][wildcard.sp]
+	output:
+		'chrom_sizes/{sp}.chrom.sizes'
+	shell:
+		"wget -x -O {output} {params.url}"
+
 rule create_kallisto_index:
 	input:
 		config['dirs']['tx'] + "{sp}.fa.gz"

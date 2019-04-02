@@ -7,3 +7,6 @@ figures
 # ignore the output html generated, and pdf files
 *.html
 *.pdf
+
+# ignore fastqc
+fastqc
