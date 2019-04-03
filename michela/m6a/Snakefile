@@ -39,7 +39,8 @@ rule all:
 		expand(kallisto_quant_output, sample=config['samples']),
 		expand(esat_output, sample=config['samples']),
 		expand(fastqc_output, sample=config['samples']),
-		expand('data/bigwig/{sample}.bw', sample=config['samples']),
+		expand('data/bigwig/raw/{sample}.bw', sample=config['samples']),
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=config['samples'], strand=['forward', 'reverse']),
 		expand(indexed_bam_output, sample=config['samples'])
 
 rule kallisto_quant:
@@ -144,9 +145,22 @@ rule create_bigwig:
 		chrom_sizes= load_shared('chrom_sizes/dm6.chrom.sizes'),
 		bedgraph= '{sample}.sorted.bedGraph'
 	output:
-		'data/bigwig/{sample}.bw'
+		'data/bigwig/raw/{sample}.bw'
 	shell:
 		"""
 		mkdir -p data/bigwig
 		bedGraphToBigWig {input.bedgraph} {input.chrom_sizes} {output}
+		"""
+
+rule create_normalised_bigwig:
+	input:
+		star_output
+	output:
+		'data/bigwig/normalised/{sample}.{strand}.bw'
+	shell:
+		"""
+		bamCoverage --bam {input} -o {output} \
+			--normalizeUsing RPKM \
+			--binSize 5 \
+			--filterRNAstrand {wildcards.strand} 
 		"""
