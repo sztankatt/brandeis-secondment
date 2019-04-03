@@ -2,7 +2,8 @@ configfile: "config.yaml"
 
 rule all:
 	input:
-		'chrom_sizes/dm6.chrom.sizes'
+		'annotations/dm6.gtf',
+		'genomes/dm6.fa'
 
 rule download_file:
 	params:
@@ -16,7 +17,7 @@ rule uncompres_gz:
 	input:
 		"{file}.gz"
 	output:
-		"{file, .+\.fa}"
+		"{file, .+\.(gtf|fa)}"
 	shell:
 		"gunzip -c {input} > {output}"
 
