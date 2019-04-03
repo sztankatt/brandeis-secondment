@@ -4,6 +4,7 @@ shared/*
 # do not ignore Snakefile and config
 !shared/Snakefile
 !shared/config.yaml
+!shared/code
 
 # ignore read and alignment data
 michela/m6a/data
