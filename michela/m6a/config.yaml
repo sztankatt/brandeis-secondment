@@ -11,7 +11,5 @@ samples:
 dirs:
   data_out: 'data'
   reads: '/bardata1/inespatop/projects/michella/m6a/'
-  ix:
-    star: '/bardata1/inespatop/genomes/STAR_index/'
   annotations:
     bed: '/bardata1/inespatop/genomes/annotations/BED/dm6_ENS.bed'

@@ -2,29 +2,57 @@ configfile: "config.yaml"
 
 rule all:
 	input:
-		"transcriptomes/dm6.fa.gz",
-		"indices/kallisto/dm6.kallisto.index"
+		'chrom_sizes/dm6.chrom.sizes'
 
-rule download_transcriptome:
+rule download_file:
 	params:
-		url=lambda wildcard: config['links']['transcriptomes'][wildcard.sp]
+		url=lambda wildcard: config['downloads'][wildcard.download_type][wildcard.sp]
 	output:
-		"transcriptomes/{sp}.fa.gz"
+		"{download_type}/{sp, dm6|hg38|mm10}.{suffix, fa.gz|gtf.gz}"
 	shell:
 		"wget -x -O {output} {params.url}"
 
-rule download_chrom_sizes:
-	params:
-		url=lambda wildcard: config['links']['chrom.sizes'][wildcard.sp]
+rule uncompres_gz:
+	input:
+		"{file}.gz"
+	output:
+		"{file, .+\.fa}"
+	shell:
+		"gunzip -c {input} > {output}"
+
+rule create_chrom_size:
+	input:
+		'genomes/{sp, dm6|hg38|mm10}.fa'
 	output:
 		'chrom_sizes/{sp}.chrom.sizes'
 	shell:
-		"wget -x -O {output} {params.url}"
+		"""
+		mkdir -p chrom_sizes
+		samtools faidx {input}
+		cut -f 1,2 {input}.fai > {output}
+		"""
+
+rule build_star_index:
+	input:
+		gtf= 'annotations/{sp}.gtf',
+		fasta= 'genomes/{sp}.fa' 
+	output:
+		directory('indices/{sp}/STAR')
+	shell:
+		"""
+		mkdir -p {output}
+		STAR 	--runThreadN {threads} \
+			 	--runMode genomeGenerate \
+				--genomeDir {output} \
+				--genomeFastaFiles {input.fasta} \
+				--outFileNamePrefix {output}/ \
+				--sjdbGTFfile {input.gtf}
+		"""
 
 rule create_kallisto_index:
 	input:
-		config['dirs']['tx'] + "{sp}.fa.gz"
+		"transcriptomes/{sp, dm6|hg38|mm10}.fa.gz"
 	output:
-		config['dirs']['ix']['kallisto'] + "{sp}.kallisto.index"
+		"indices/{sp, dm6|hg38|mm10}/kallisto/kallisto.index"
 	shell:
 		"kallisto index -i {output} {input}"

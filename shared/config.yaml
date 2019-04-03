@@ -1,10 +1,7 @@
-links:
+downloads:
   transcriptomes:
     dm6: "ftp://ftp.ensembl.org/pub/release-95/fasta/drosophila_melanogaster/cds/Drosophila_melanogaster.BDGP6.cds.all.fa.gz" 
-  chrom.sizes:
-    dm6: "https://hgdownload-test.gi.ucsc.edu/goldenPath/dm6/bigZips/dm6.chrom.sizes"
-dirs:
-  genome: '/bardata1/inespatop/genomes/raw/dm6/'
-  tx: 'transcriptomes/'
-  ix:
-    kallisto: 'indices/kallisto/'
+  annotations:
+    dm6: 'ftp://ftp.ensembl.org/pub/release-95/gtf/drosophila_melanogaster/Drosophila_melanogaster.BDGP6.95.gtf.gz'
+  genomes:
+    dm6: 'ftp://ftp.ensembl.org/pub/release-95/fasta/drosophila_melanogaster/dna/Drosophila_melanogaster.BDGP6.dna_sm.toplevel.fa.gz'

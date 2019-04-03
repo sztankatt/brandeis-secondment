@@ -36,7 +36,6 @@ subworkflow load_shared:
 
 rule all:
 	input:
-		# kallisto output
 		expand(kallisto_quant_output, sample=config['samples']),
 		expand(esat_output, sample=config['samples']),
 		expand(fastqc_output, sample=config['samples']),
@@ -45,7 +44,7 @@ rule all:
 
 rule kallisto_quant:
 	input:
-		index= load_shared('indices/kallisto/dm6.kallisto.index'),
+		index= load_shared('indices/dm6/kallisto/kallisto.index'),
 		reads= raw_read_pattern
 	output:
 		kallisto_quant_output
@@ -58,7 +57,7 @@ rule kallisto_quant:
 rule map_with_star:
 	input:
 		reads= raw_read_pattern,
-		index= config['dirs']['ix']['star']
+		index= load_shared('indices/dm6/STAR')
 	output:
 		star_output
 	threads: 8
@@ -95,7 +94,7 @@ rule run_esat:
 	output:
 		esat_output
 	params:
-		annotation= '../../shared/annotation/gene2transcript.txt',
+		annotation= '../../shared/annotations/gene2transcript.txt',
 		out_prefix= esat_output_prefix 
 	shell:
 		"""
@@ -138,7 +137,7 @@ rule sort_bedgraph:
 	output:
 		temp('{sample}.sorted.bedGraph')
 	shell:
-		'sort -k1,1 -k2,2n < {input} > {output}'
+		'LC_COLLATE=C sort -k1,1 -k2,2n {input} > {output}'
 
 rule create_bigwig:
 	input:
