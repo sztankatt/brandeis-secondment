@@ -1,6 +1,8 @@
 configfile: "config.yaml"
 
 raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
+#samples = config['samples']
+samples = ['IP_3_S32']
 
 # kallisto settings
 kallisto_abundance_suffix = 'abundance.h5'
@@ -36,12 +38,11 @@ subworkflow load_shared:
 
 rule all:
 	input:
-		expand(kallisto_quant_output, sample=config['samples']),
-		expand(esat_output, sample=config['samples']),
-		expand(fastqc_output, sample=config['samples']),
-		expand('data/bigwig/raw/{sample}.bw', sample=config['samples']),
-		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=config['samples'], strand=['forward', 'reverse']),
-		expand(indexed_bam_output, sample=config['samples'])
+		expand(kallisto_quant_output, sample=samples),
+		expand(esat_output, sample=samples),
+		expand(fastqc_output, sample=samples),
+		#expand('data/bigwig/raw/{sample}.bw', sample=samples),
+		#expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
 
 rule kallisto_quant:
 	input:
@@ -154,12 +155,13 @@ rule create_bigwig:
 
 rule create_normalised_bigwig:
 	input:
-		star_output
+		mapped_reads=star_output,
+		index=indexed_bam_output
 	output:
 		'data/bigwig/normalised/{sample}.{strand}.bw'
 	shell:
 		"""
-		bamCoverage --bam {input} -o {output} \
+		bamCoverage --bam {input.mapped_reads} -o {output} \
 			--normalizeUsing RPKM \
 			--binSize 5 \
 			--filterRNAstrand {wildcards.strand} 
