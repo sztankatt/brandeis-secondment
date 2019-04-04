@@ -1,5 +1,6 @@
 ####
 # File which creates the gene 2 transcript mapping, required by the --geneMapping flag of esat short read counter
+# TO BE CALLED BY SNAKEMAKE
 ####
 library(biomaRt)
 library(plyr)
@@ -16,6 +17,7 @@ exons <- ensembl %>%
 	getBM(
 		  attributes = c('ensembl_transcript_id',
 						 'ensembl_gene_id',
+						 'external_gene_name',
 						 'exon_chrom_start', 
 						 'exon_chrom_end',
 						 'strand',
@@ -37,6 +39,9 @@ exons <- exons %>%
 	mutate(strand = ifelse(strand == 1, "+", "-"))
 
 gene2transcript <- exons %>%
+	# filter out 'artificial transcripts' where gene id and tx id is the same.
+	# this was causing issues in esat
+	filter(name != name2) %>%
 	ddply(.,
 		  .(name, name2, chrom, strand, txStart, txEnd),
 		  summarize,
@@ -45,4 +50,4 @@ gene2transcript <- exons %>%
 		  exonEnds = paste0(paste(exonEnds, collapse = ','), ',')) %>%
 	as_tibble
 
-format_tsv(gene2transcript, col_names = T) %>% cat
+write_tsv(gene2transcript, path = snakemake@output, col_names = T)
