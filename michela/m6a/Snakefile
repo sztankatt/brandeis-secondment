@@ -1,8 +1,7 @@
 configfile: "config.yaml"
 
 raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
-#samples = config['samples']
-samples = ['IP_3_S32']
+samples = config['samples']
 
 # kallisto settings
 kallisto_abundance_suffix = 'abundance.h5'
@@ -41,8 +40,8 @@ rule all:
 		expand(kallisto_quant_output, sample=samples),
 		expand(esat_output, sample=samples),
 		expand(fastqc_output, sample=samples),
-		#expand('data/bigwig/raw/{sample}.bw', sample=samples),
-		#expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
+		expand('data/bigwig/raw/{sample}.bw', sample=samples),
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
 
 rule kallisto_quant:
 	input:
