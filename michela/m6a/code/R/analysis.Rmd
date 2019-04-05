@@ -15,7 +15,8 @@ knitr::opts_chunk$set(
   warning = FALSE,
   comment = NA,
   cache.path = 'cache/',
-  fig.path = 'figures/')
+  fig.path = 'figures/',
+  knitr.table.format = 'markdown')
 ```
 
 ```{r load_libraries, echo = F, cache = F}
@@ -31,6 +32,10 @@ library(GGally)
 library(DESeq2)
 library(tximport)
 library(kableExtra)
+```
+
+```{r load_functions, echo = F, cache = F}
+source('readStarLog.R')
 ```
 
 ```{r get_gene_name_id_map, echo = F}
@@ -58,7 +63,16 @@ genes <- txs %>%
 	mutate(gene_length = gene_end - gene_start)
 ```
 
-# ESAT
+```{r load_sample_specification, echo = F}
+config = read_yaml('../../config.yaml')
+samples <- config$samples
+```
+
+# Initials checks
+
+TODO: load star here, and fastqc
+
+# Analysis
 
 ESAT (ref) is a counting toolkit designed for short 3' or 5' libraries. As a check, we also mapped the reads with STAR and then counted the reads on the gene level with ESAT, and correlated the results with counts coming from kallisto+tximport
 
@@ -67,8 +81,6 @@ ESAT (ref) is a counting toolkit designed for short 3' or 5' libraries. As a che
 The if we plot the counts and tpm-s (transcript per million) on a log-x scale, we observe a normal distribution which is expected. Also, the mean values of tpm-s are comparable, so it seems there is not big difference between the libraries of the 3 conditions sequenced.
 
 ```{r import_esat_counts, echo = F}
-config = read_yaml('../../config.yaml')
-samples <- config$samples
 
 esat_dir = '../../data/esat/'
 esat_counts <- samples %>%
@@ -85,6 +97,10 @@ esat_counts <- samples %>%
 	transmute(sample = sample,
 			  gene_id = Symbol,
 			  count = Exp1) %>%
+	# fill non detected genes in each sample with zeros
+	spread(sample, count, fill = 0) %>%
+	# gather back
+	gather('sample', 'count', samples) %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
 	inner_join(genes, by = 'gene_id') %>%
 	mutate(tpm = count / gene_length,
@@ -193,7 +209,7 @@ plot_genes(esat_counts, c('mbl'), x_lab = 'gene_name', metric = 'tpm')
 
 ## Correlation between replicates
 
-```{r plot_correlation_between_replicates, echo = F, fig.height = 6, fig.width = 10}
+```{r plot_correlation_between_replicates, echo = F, fig.height = 3, fig.width = 10}
 get_cor_plot <- function(data, sx, sy, quant_type = 'count'){
 	dat <- data %>%
 		unite('run', condition, replicate) %>%
@@ -208,38 +224,115 @@ get_cor_plot <- function(data, sx, sy, quant_type = 'count'){
 		mutate(quant_type = log10(quant_type)) %>%
 		spread(run, quant_type) %>%
 		ggplot(aes_string(x=sx, y=sy)) +
-			geom_point()
+			geom_point(alpha = 0.8, size = 0.5) +
+			coord_fixed()
 
-	pl <- pl + annotate("text", Inf, -Inf, label = paste0('R = ', round(r, 3)), hjust = 2, vjust = -10)
+	pl <- pl + annotate("text", Inf, -Inf, label = paste0('R = ', round(r, 3)), hjust = 1, vjust = -5)
 
 	pl
 }
 
 plot_grid(get_cor_plot(esat_counts, 'IP_1', 'IP_3'),
 		  get_cor_plot(esat_counts, 'IP_2', 'IP_3'),
-		  get_cor_plot(esat_counts, 'IP_1', 'IP_2'))
+		  get_cor_plot(esat_counts, 'IP_1', 'IP_2'),
+		  ncol = 3)
 ```
 
 ## DE analysis
 
-```{r prepare_deseq, echo = F}
-# filter out replicate 3
-# dds <- dds[,sample_metadata %>% filter(replicate != 3) %$% sample]
+### Deseq model
 
+First we build a DEseq model on the data for IP vs input and IP vs IgG. We build a paired model using the formula  `~ replicate + condition` to account for variability between replicates.
+
+```{r prepare_deseq, echo = F}
 dds <- DESeq(dds)
 
 ip_vs_input.res <- results(dds, name = 'condition_IP_vs_input', alpha = 0.01)
-
+ip_vs_input.resLFC <- lfcShrink(dds, res = ip_vs_input.res, coef = 'condition_IP_vs_input', type = 'apeglm')
 ```
 
 
 ```{r plot_volcano_plot, echo = F}
-ip_vs_input.res %>%
+ip_vs_input.resLFC %>%
 	as.data.frame %>%
 	rownames_to_column(var = 'gene_name') %>%
 	as_tibble %>%
 	filter(!is.na(padj)) %>%
+	mutate(sig = ifelse(log2FoldChange > log2(3) & padj < 0.01, T, F)) %>%
 	ggplot(aes(log2FoldChange, -log10(padj))) +
+		geom_point(aes(color = sig), alpha = 0.7, size = 0.8) + 
+		xlim(-3.5, 3.5) +
+		scale_color_manual(values = c('black', 'red')) +
+		ggtitle('Several genes highly enriched IP vs input',
+				'Genes with LFC > 3 and adjusted p < 0.0 colored in red') +
+		theme(legend.position = 'none')
+```
+
+### Compare enrichment on a per-sample basis
+
+```{r per_sample_enrichment, echo = F}
+# calculate ratios of 
+enrichment_data <- esat_counts %>%
+	dplyr::select(condition, replicate, gene_id, gene_name, tpm) %>%
+	# spread the tpm-s across conditions
+	spread(condition, tpm) %>%
+	# group tpm's back into one column, this time only IgG and IP
+	gather('pull_down_condition', 'pull_down_tpm', c('IgG', 'IP')) %>%
+	group_by(pull_down_condition, replicate) %>%
+	mutate(tpm_enrichment = pull_down_tpm / input)
+```
+
+```{r create_big_enrichment_table, echo = F}
+big_table <- enrichment_data %>%
+	unite('sample', pull_down_condition, replicate) %>%
+	dplyr::select(gene_name, sample, tpm_enrichment) %>%
+	mutate(sample = paste0(sample, '_enrichment')) %>%
+	spread(sample, tpm_enrichment)
+
+# append counts
+big_table <- big_table %>%
+	inner_join(esat_counts %>%
+		 	unite('sample', condition, replicate) %>%
+			dplyr::select(gene_name, sample, count) %>%
+			#rename sample's before spread
+			mutate(sample = paste0(sample, '_count')) %>%
+			spread(sample, count),
+		by = 'gene_name')
+
+big_table <- big_table %>%
+	inner_join(esat_counts %>%
+				   unite('sample', condition, replicate) %>%
+				   dplyr::select(gene_name, sample, tpm) %>%
+				   # rename sample before spread
+				   mutate(sample = paste0(sample, '_tpm')) %>%
+				   spread(sample, tpm, fill = 0),
+			   by = 'gene_name')
+
+write_excel_csv(big_table, '../../data/expression_table.csv')
+```
+
+
+```{r calculate_enrichment_medians, echo = F}
+enrichment_medians <- enrichment_data %>%
+	mutate(condition = pull_down_condition) %>%
+	group_by(gene_name, condition) %>%
+	summarise(median_enrichment = median(tpm_enrichment))
+```
+
+```{r plot_density_of_enrichment_hist, echo = F}
+enrichment_medians %>%
+	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%	
+	ggplot(aes(median_enrichment, fill = condition)) +
+		geom_density(alpha = 0.8) +
+		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+		scale_x_continuous(breaks = 0:5, limits = c(0, 5.5)) +
+		ggtitle('Median enrichment of IP and IgG versus input')
+```
+
+```{r plot_density_of_enrichment_points, echo = F}
+enrichment_medians %>%
+	spread(condition, median_enrichment) %>%
+	ggplot(aes(IP, IgG)) +
 		geom_point()
 ```
 
