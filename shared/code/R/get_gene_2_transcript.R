@@ -50,4 +50,4 @@ gene2transcript <- exons %>%
 		  exonEnds = paste0(paste(exonEnds, collapse = ','), ',')) %>%
 	as_tibble
 
-write_tsv(gene2transcript, path = snakemake@output, col_names = T)
+write_tsv(gene2transcript, path = snakemake@output[[1]], col_names = T)
