@@ -9,5 +9,14 @@ calculateEnrichment <- function(data, conditions, against = 'input'){
 		group_by(pull_down_condition, replicate) %>%
 		mutate(tpm_enrichment = pull_down_tpm / input)
 
+	# take back counts from inputs
+	enrichment_data <- data %>%
+		filter(condition == 'input') %>%
+		ungroup() %>%
+		transmute(gene_id = gene_id,
+				  replicate = replicate,
+				  input_count = count) %>%
+		right_join(enrichment_data, by = c('gene_id', 'replicate'))
+
 	enrichment_data
 }

@@ -327,6 +327,10 @@ ip_3_downsampled <- ip_3_downsampled %>%
 
 
 ```{r merge_downsampled_values_back, echo = F, eval = T}
+# calculate downsampled counts, as follows: treat each read independently,
+# then draw 9 million reads out of 42 million, without replacement, with uniform
+# probability
+# 
 # first drop tmp as it will be recalculated
 downsampled_counts <- esat_counts %>%
 	dplyr::select(-tpm) %>%
@@ -422,6 +426,7 @@ Next we checked if we indeed get an enrichment in IP/input, versus IgG/input.
 This is the case, if we look at the distribution of median enrichment IP/input vs IgG/input: we get more values enriched in the IP/input, and the distribution has a higher mean.
 
 ```{r calculate_enrichment_medians, echo = F}
+# calculate the median enrichment for both IP/input and IgG/input
 enrichment_medians <- enrichment_data %>%
 	mutate(condition = pull_down_condition) %>%
 	group_by(gene_name, condition) %>%
@@ -430,11 +435,13 @@ enrichment_medians <- enrichment_data %>%
 ```
 
 ```{r plot_density_of_enrichment_hist, echo = F}
+# calculate mean of each distribution, for later visualisation
 mu <- enrichment_medians %>%
 	ungroup %>%
 	group_by(condition) %>%
 	summarise(grp.mean = mean(median_enrichment))
 
+# visualise enrichment, plotting also the means
 enrichment_medians %>%
 	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%	
 	ggplot(aes(median_enrichment, color = condition, fill = condition)) +
@@ -456,6 +463,8 @@ enrichment_medians %>%
 #### Enrichment between downsampled and normal IP's
 
 ```{r compare_enrichment_downsampled_normal, echo = F}
+# combine dowsnapled enrichment with normal enrichment. 
+# basically this means that the tpm_enrichment will change for IP_3
 enrichment_comparison_data <- downsampled_counts %>%
 	calculateEnrichment(conditions = c('IgG', 'IP'), against = 'input') %>%
 	# select only key columns and tpm
@@ -469,6 +478,8 @@ enrichment_comparison_data <- downsampled_counts %>%
 ```
 
 ```{r plot_enrichment_difference_density, echo = F}
+# plot the enrichment comparison as a density function to get distribution differences
+# IP 1 and 2 should stay the same, while IP 3 distribution might slightly change
 enrichment_comparison_data %>%
 	filter(pull_down_condition == 'IP') %>%
 	gather('enrichment_type', 'tpm_enrichment', tpm_enrichment.normal, tpm_enrichment.ds) %>%
@@ -495,6 +506,8 @@ To identify consistently enriched we first filtered the genes as follows:
 candidates <- enrichment_data %>%
 	# filter out IP with tpm <= 0.1
 	filter(pull_down_tpm > 0.1 | pull_down_condition == 'IgG') %>%
+	# filter genes which have low counts in the input
+	filter(input_count > 4) %>%
 	# filter NaN, NA, and Inf values
 	filter(is.finite(tpm_enrichment)) %>%
 	# group by the gene and condition, ie IP or IgG
@@ -513,7 +526,6 @@ filter_ip <- list(mean_tpm = 10,
 candidates_ip <- candidates %>%
 	filter(passing_filter == 3, pull_down_condition == 'IP') %>%
 	mutate(sig = mean_ip_tpm > filter_ip$mean_tpm & median_enrichment > filter_ip$median_enrichment)
-
 ```
 
 Below we plot the median TPM enrichment of all 3 IP/input values, against the average IP TPM on a log10-scale.
@@ -566,6 +578,7 @@ In total there are `r nrow(filter(candidates_ip, sig == T))`/`r nrow(filter(cand
 # define candidate differences: between IP and IgG
 candidates_diff <- candidates %>%
 	ungroup() %>%
+	# only get
 	filter(passing_filter == 3 | pull_down_condition == 'IgG') %>%
 	transmute(gene_name = gene_name,
 			  condition = pull_down_condition,
@@ -575,7 +588,6 @@ candidates_diff <- candidates %>%
 	spread(condition, selected_enrichment) %>%
 	# calculate the difference between IP and IgG
 	mutate(enrichment_diff = IP - IgG) %>%
-	# filter if enrichment difference between IP and IgG is at least 1.5 higher for the IP
 	filter(is.finite(enrichment_diff))
 ```
 
@@ -596,8 +608,8 @@ Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(f
 
 ```{r plot_igg_vs_ip_enrichment, echo = F}
 pl_in <- candidates_diff %>%
-	filter(enrichment_diff > 0) %>%
-	mutate(sig = IP > 2 & enrichment_diff > 1)
+	filter(IgG < 10) %>%
+	mutate(sig = enrichment_diff > 2)
 
 pl_in %>%
 	ggplot(aes(IP, IgG, color = sig)) +
@@ -608,7 +620,7 @@ pl_in %>%
 		coord_fixed() +
 		theme(legend.position = 'none') +
 		labs(x = 'min(m6A/input)', y = 'max(IgG/input)') +
-		ggtitle('IP vs IgG enrichment', 'where IP/input > IgG/input')
+		ggtitle('IP vs IgG enrichment, where IP/input > IgG/input', 'Genes for which IP/input > 2*IgG/input are in red')
 ```
 
 
