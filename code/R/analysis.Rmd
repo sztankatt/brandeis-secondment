@@ -43,6 +43,8 @@ source('calculateEnrichment.R')
 theme_update(plot.title = element_text(hjust = 0),
 			 strip.text.x = element_text(margin = margin(c(3,3,3,3))),
 			 strip.text.y = element_text(margin = margin(c(3,3,3,3))))
+
+wd <- '../../michela/m6a/'
 ```
 
 ```{r get_gene_name_id_map, echo = F}
@@ -82,7 +84,7 @@ samples <- config$samples
 ```{r parse_star_logfiles, echo = F}
 star_log <- samples %>%
 	ldply(function(sample){
-		readStarLog(paste0('data/mapping/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
+		readStarLog(paste0(wd,'data/mapping/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
 	}) %>%
 	as_tibble %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
@@ -100,7 +102,7 @@ ESAT (ref) is a counting toolkit designed for short 3' or 5' libraries. As a che
 The if we plot the counts and tpm-s (transcript per million) on a log-x scale, we observe a normal distribution which is expected. Also, the mean values of tpm-s are comparable, so it seems there is not big difference between the libraries of the 3 conditions sequenced.
 
 ```{r import_esat_counts, echo = F}
-esat_dir = 'data/esat/'
+esat_dir = paste0(wd, 'data/esat/')
 esat_counts <- samples %>%
 	# create a dataframe out of counts
 	data.frame(sample = .) %>%
@@ -419,7 +421,7 @@ big_table <- big_table %>%
 				   spread(sample, tpm, fill = 0),
 			   by = 'gene_name')
 
-write_excel_csv(big_table, 'data/expression_table.csv')
+write_excel_csv(big_table, paste0(wd, 'data/expression_table.csv'))
 ```
 
 Next we checked if we indeed get an enrichment in IP/input, versus IgG/input.
@@ -662,7 +664,7 @@ Second, we also calculated the transcript counts with using kallisto (ref needed
 ####
 # import kallisto using read_table2
 ####
-kallisto_dir = 'data/kallisto_quant/'
+kallisto_dir = paste0(wd, 'data/kallisto_quant/')
 
 kallisto_data <- samples %>% ldply(function(smpl){
 		df <- read_table2(paste0(kallisto_dir, '/', smpl, '/abundance.tsv'))
