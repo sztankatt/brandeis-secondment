@@ -8,6 +8,7 @@ shared/*
 
 # ignore read and alignment data
 michela/m6a/data
+nagarjuna/rfp/data
 
 # ignore all log files
 *.log*

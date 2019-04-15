@@ -1,0 +1,88 @@
+configfile: "config.json"
+
+samples = config['samples'].keys()
+#samples = ['test']
+bowtie1_index = '/data/rajewsky/indices/dm6_bowtie_1.1.1/dm6.fa'
+missmatches = 0
+illumina_adaptors = '../../shared/illumina_adaptors.fa'
+dm6_gtf = '/data/rajewsky/annotation/dm6/ensGene.proper_gene_id.gtf'
+dm6_tophat_tx_index = '/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper_gene_id'
+
+root_data_dir = 'data/'
+
+read_suffix = '{sample}.fastq.gz'
+
+raw_reads_path = root_data_dir + 'reads/raw/'
+raw_reads = raw_reads_path + read_suffix
+
+trimmed_reads_path = root_data_dir + 'reads/trimmed/'
+trimmed_reads = trimmed_reads_path + read_suffix
+
+# pattern of clean fastq.gz, trimmed and without umis
+clean_reads_path = root_data_dir + 'reads/clean/'
+clean_reads = clean_reads_path + read_suffix
+# extract 4 umis from both side
+umi_extraction_regex = "'(?P<umi_1>.{4}).*(?P<umi_2>.{4})'"
+
+# tophat output
+tophat_out_path = root_data_dir + 'mapping/'
+#tophat_out = [mapped_reads_path + '{sample}' + suffix for suffx in ['.mapped.bam']]
+tophat_out = tophat_out_path + "{sample}"
+
+rule all:
+	input:
+		expand(tophat_out, sample=samples)
+
+# download from ena instead of SRA
+rule download_sra:
+	output:
+		raw_reads
+	params: 
+		sample_sra= lambda wildcards: config['samples'][wildcards.sample],
+		sample_prefix= config['ena_prefix']
+	shell:
+		"""
+		wget -x -O {output} {params.sample_prefix}{params.sample_sra}.fastq.gz
+		"""
+
+rule trim_with_flexbar:
+	input:
+		raw_reads
+	output:
+		pipe(trimmed_reads)
+	threads: 4
+	shell:
+		"""
+		mkdir -p {trimmed_reads_path}
+		flexbar -qf i1.8 -qt 25 -m 20 --min-read-length 28 --adapter-trim-end RIGHT --adapter-preset SmallRNA \
+			-n {threads} -r {input} -t {trimmed_reads_path}{wildcards.sample} -z GZ
+		"""
+
+rule get_umis:
+	input:
+		trimmed_reads
+	output:
+		clean_reads
+	params:
+		log_file= lambda wildcards: clean_reads_path + wildcards.sample + ".umi_tools.log" 
+	shell:
+		"umi_tools extract --stdin={input} --bc-pattern={umi_extraction_regex} --extract-method=regex --log={params.log_file} --stdout={output}"
+		
+rule map_with_tophat:
+	input:
+		clean_reads
+	output:
+		directory(tophat_out)
+	threads: 8
+	shell:
+		"""
+		tophat 	--no-coverage-search --bowtie1 --max-intron-length 260000 --num-threads {threads} --max-multihits 1 \
+			--GTF {dm6_gtf} --no-novel-juncs --transcriptome-index {dm6_tophat_tx_index} \
+			--library-type fr-firststrand --output-dir {output} {bowtie1_index} {input}
+		"""
+
+rule remove_pcr_duplicates:
+	input:
+		'mapping/{sample}/accepted_hits.bam'
+	output:
+		'mapping/{sample}/dedupped.bam'
