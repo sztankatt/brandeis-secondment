@@ -6,9 +6,12 @@ shared/*
 !shared/config.yaml
 !shared/code
 
-# ignore read and alignment data
-michela/m6a/data
-nagarjuna/rfp/data
+# ignore all data folders
+**/data
+
+# ignore cache and figures folder
+**/cache
+**/figures
 
 # ignore all log files
 *.log*
@@ -16,3 +19,5 @@ nagarjuna/rfp/data
 # ignore all snakemake files
 *.snakemake
 
+# ignore all html files, as they are generated dynamically
+*.html
