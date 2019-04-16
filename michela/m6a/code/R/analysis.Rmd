@@ -36,7 +36,7 @@ library(metaseqR)
 ```
 
 ```{r load_functions, echo = F, cache = F}
-source('readStarLog.R')
+source('../../../../shared/code/R/readStarLog.R')
 source('calculateEnrichment.R')
 
 # set the default title spacing for plots
@@ -44,7 +44,7 @@ theme_update(plot.title = element_text(hjust = 0),
 			 strip.text.x = element_text(margin = margin(c(3,3,3,3))),
 			 strip.text.y = element_text(margin = margin(c(3,3,3,3))))
 
-wd <- '../../michela/m6a/'
+wd <- '../../'
 ```
 
 ```{r get_gene_name_id_map, echo = F}
@@ -585,7 +585,7 @@ candidates_diff <- candidates %>%
 	transmute(gene_name = gene_name,
 			  condition = pull_down_condition,
 			  # select the highest IgG enrichment vs lowest IP
-			  selected_enrichment = ifelse(condition == 'IP', min_enrichment, max_enrichment)) %>%
+			  selected_enrichment = ifelse(condition == 'IP', median_enrichment, median_enrichment)) %>%
 	# spread enrichment ratios
 	spread(condition, selected_enrichment) %>%
 	# calculate the difference between IP and IgG
@@ -616,13 +616,26 @@ pl_in <- candidates_diff %>%
 pl_in %>%
 	ggplot(aes(IP, IgG, color = sig)) +
 		geom_point(size = 0.9, alpha = 0.7) +
-		scale_x_continuous(breaks = 0:10) +
-		scale_x_continuous(breaks = 0:10) +
+		scale_y_continuous(breaks = 0:10, limits = c(0,10)) +
+		scale_x_continuous(breaks = 0:10, limits = c(0,10)) +
 		scale_color_manual(values = c('black', 'red')) +
 		coord_fixed() +
 		theme(legend.position = 'none') +
-		labs(x = 'min(m6A/input)', y = 'max(IgG/input)') +
-		ggtitle('IP vs IgG enrichment, where IP/input > IgG/input', 'Genes for which IP/input > 2*IgG/input are in red')
+		labs(x = 'median(m6A/input)', y = 'median(IgG/input)') +
+		ggtitle('IP vs IgG enrichment', '(IP - IgG)/input > 2 in red')
+```
+
+```{r save_candidate_tx_ids, echo = F}
+candidate_gene_names <- candidates_diff %>%
+	filter(enrichment_diff > 2) %$%
+	gene_name
+
+candidate_tx_ids <- txs %>%
+	filter(gene_name %in% candidate_gene_names) %$%
+	tx_id
+
+dir.create(paste0(wd, 'data/candidates/'))
+write_tsv(data.frame(a=candidate_tx_ids), path = paste0(wd, 'data/candidates/m6A_enriched_tx_ids.txt'), col_names = F)
 ```
 
 
