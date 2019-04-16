@@ -41,7 +41,8 @@ rule all:
 		expand(esat_output, sample=samples),
 		expand(fastqc_output, sample=samples),
 		expand('data/bigwig/raw/{sample}.bw', sample=samples),
-		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse']),
+		'data/candidates/m6A_enriched_tx_sequences.fa'
 
 rule kallisto_quant:
 	input:
@@ -165,3 +166,23 @@ rule create_normalised_bigwig:
 			--binSize 5 \
 			--filterRNAstrand {wildcards.strand} 
 		"""
+
+rule create_meme_motif_file:
+	output:
+		'data/m6a_meme_motif.txt'
+	shell:
+		"iupac2meme RRACU > {output}"
+
+rule get_enriched_sequences:
+	input:
+		tx_sequences= load_shared('transcriptomes/dm6.fa'),
+		tx_ids= 'data/candidates/m6A_enriched_tx_ids.txt'
+	output:
+		'data/candidates/m6A_enriched_tx_sequences.fa'
+	shell:
+		"xargs samtools faidx {input.tx_sequences} < {input.tx_ids}"
+
+rule run_motif_search:
+	input:
+		'data/m6a_meme_motif.txt',
+		'data/candidates/m6A_enriched_tx_sequences.fa'
