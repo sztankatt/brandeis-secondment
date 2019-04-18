@@ -2,7 +2,8 @@ configfile: "config.yaml"
 
 rule all:
 	input:
-		'annotations/gene2transcript.txt'
+		'genomes/dm6.fa'
+
 rule download_file:
 	params:
 		url=lambda wildcard: config['downloads'][wildcard.download_type][wildcard.sp]

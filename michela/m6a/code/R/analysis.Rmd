@@ -505,7 +505,7 @@ To identify consistently enriched we first filtered the genes as follows:
 - They are enriched in all three IP/input comparisons at least 2-fold
 
 ```{r identify_enriched_candidates, echo = F}
-candidates <- enrichment_data %>%
+filtered_data <- enrichment_data %>%
 	# filter out IP with tpm <= 0.1
 	filter(pull_down_tpm > 0.1 | pull_down_condition == 'IgG') %>%
 	# filter genes which have low counts in the input
@@ -525,7 +525,7 @@ filter_ip <- list(mean_tpm = 10,
 				  median_enrichment = 3)
 
 # get the significant candidates in IP, that is those which are expressed at least TPM > 0.1 in each IP replicate
-candidates_ip <- candidates %>%
+candidates_ip <- filtered_data %>%
 	filter(passing_filter == 3, pull_down_condition == 'IP') %>%
 	mutate(sig = mean_ip_tpm > filter_ip$mean_tpm & median_enrichment > filter_ip$median_enrichment)
 ```
@@ -578,7 +578,7 @@ In total there are `r nrow(filter(candidates_ip, sig == T))`/`r nrow(filter(cand
 
 ```{r candidate_igg_background_removal, echo = F}
 # define candidate differences: between IP and IgG
-candidates_diff <- candidates %>%
+enrichment_diff <- filtered_data %>%
 	ungroup() %>%
 	# only get
 	filter(passing_filter == 3 | pull_down_condition == 'IgG') %>%
@@ -597,7 +597,7 @@ candidates_diff <- candidates %>%
 # we plot the same plot as above, but this time only using the genes for which there is a difference between IP and IgG enrichment
 candidates_ip_diff <- candidates_ip %>%
 	# show only candidates, for which IP enrichment is bigger than 0
-	filter(gene_name %in% (candidates_diff %>% filter(enrichment_diff > 0) %$% gene_name))
+	filter(gene_name %in% (enrichment_diff %>% filter(enrichment_diff > 0) %$% gene_name))
 
 candidates_ip_diff %>%
 	ip_candidate_plot(plot_title = 'Enriched genes IP/input without IgG background', filters = filter_ip)
@@ -609,7 +609,7 @@ Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(f
 #### Comparing enrichment IP vs IgG
 
 ```{r plot_igg_vs_ip_enrichment, echo = F}
-pl_in <- candidates_diff %>%
+pl_in <- enrichment_diff %>%
 	filter(IgG < 10) %>%
 	mutate(sig = enrichment_diff > 2)
 
@@ -625,19 +625,87 @@ pl_in %>%
 		ggtitle('IP vs IgG enrichment', '(IP - IgG)/input > 2 in red')
 ```
 
-```{r save_candidate_tx_ids, echo = F}
-candidate_gene_names <- candidates_diff %>%
+```{r get_genome_and_gtf, echo = F}
+library(BSgenome)
+library(GenomicFeatures)
+
+txdb <- makeTxDbFromGFF(paste0(wd, '../../shared/annotations/dm6.gtf'))
+dm6_genome <- readDNAStringSet(paste0(wd, '../../shared/genomes/dm6.fa')) 
+
+# rename the chr names, as in the original dm6.fasta they have have some stuff appended after 2L, etc
+names(dm6_genome) <- names(dm6_genome) %>%
+	tibble(names = .) %>%
+	separate(names, into = c('chr'), extra = 'drop')  %$%
+	chr
+
+gene_exons <- exonsBy(txdb, by = 'gene') %>%
+	# collapse the ranges, so that overlapping exons are joined together
+	reduce() %>%
+	# get the data to tibble
+	as_tibble %>%
+	# filter for only cannonical chromosomes
+	filter(seqnames %in% c('3R', '2R', '3L', '2L', 'X', 'Y', '4')) %>%
+	makeGRangesListFromDataFrame(split.field = 'group_name')
+```
+
+```{r get_sequences, echo = F}
+gene_sequences <- llply(gene_exons, function(gene){
+	chr <- gene[1] %>% seqnames %>% as.character
+	strand <- gene[1] %>% strand %>% as.character
+
+	# get the sequences from a given chromosome, between the exon starts and ends
+	sequence <- extractAt(dm6_genome[[chr]], at = ranges(gene))
+
+	# join ranges together
+	sequence <- unlist(sequence)
+
+	# if reverse strand, take the reverse complement
+	if(strand == '-'){
+		sequence <- reverseComplement(sequence)
+	}
+
+	return(sequence)
+}) %>%
+DNAStringSet
+```
+
+```{r save_sequences, echo = F}
+candidate_gene_names <- enrichment_diff %>%
 	filter(enrichment_diff > 2) %$%
 	gene_name
 
-candidate_tx_ids <- txs %>%
-	filter(gene_name %in% candidate_gene_names) %$%
-	tx_id
 
-dir.create(paste0(wd, 'data/candidates/'))
-write_tsv(data.frame(a=candidate_tx_ids), path = paste0(wd, 'data/candidates/m6A_enriched_tx_ids.txt'), col_names = F)
+# get esat counts, and filter only the IP's, and get the median of those
+counts_for_fasta <- esat_counts %>%
+	filter(condition == 'IP') %>%
+	group_by(gene_id) %>%
+	summarise(tpm = median(tpm))
+
+# flag candidates, join original gene tibble together, to account for dropouts
+counts_for_fasta <- genes %>%
+	# flag the candidates in the original gene table
+	mutate(is_candidate = gene_name %in% candidate_gene_names) %>%
+	# join the median tpm counts for IP
+	left_join(counts_for_fasta, by = 'gene_id') %>%
+	# create names for the fasta output, which contain tpm-s attached to the gene name
+	mutate(tpm = ifelse(is.na(tpm), 0, tpm),
+		   fasta_name = paste0(gene_id, ' ', tpm)) %>%
+	# take only genes for which we have sequences
+	filter(gene_id %in% names(gene_sequences))
+
+# we don't need this, as we compare candidates to rest...
+#candidate_seq <- gene_sequences[counts_for_fasta %>% filter(is_candidate) %$% gene_id]
+#names(candidate_seq) <- counts_for_fasta %>% filter(gene_id %in% names(candidate_seq)) %$% fasta_name
+#
+#rest_seq <- gene_sequences[counts_for_fasta %>% filter(!is_candidate) %$% gene_id]
+#names(rest_seq) <- counts_for_fasta %>% filter(gene_id %in% names(rest_seq)) %$% fasta_name
+
+writeXStringSet(candidate_seq,
+				paste0(wd, 'data/candidates/candidates.fa'))
+
+writeXStringSet(rest_seq,
+				paste0(wd, 'data/candidates/control_seqs.fa'))
 ```
-
 
 ### Differential expression: building a DESeq2 model
 
