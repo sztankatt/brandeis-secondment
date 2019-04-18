@@ -1,0 +1,56 @@
+--- 
+title: "circrna accumullation"
+author: "tsztank"
+date: "`r format(Sys.time(), '%d/%B/%Y')`"
+output: 
+  html_document:
+    theme: journal
+---
+
+```{r knitr_options, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(
+  cache = T,
+  autodep = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = NA,
+  cache.path = 'cache/',
+  fig.path = 'figures/',
+  knitr.table.format = 'markdown')
+```
+```{r load_libraries, echo = F}
+library(tidyverse)
+library(readxl)
+library(magrittr)
+```
+
+```{r load_data, echo = F}
+
+# normalised circRNA: (n_bs_juncs / 1 million ) / rpkm_host-_gene. mathematically this doesn't make much sense, as relationship between circs and linear transcripts is non-linear
+accumulation_counts <- read_excel('../../data/westholm_2014_circrna_accumulation.xlsx')
+
+# signitifant circs with log2FoldChange > 2, p < 0.05
+accumulation_sig_circs <- read_excel('../../data/westholm_2014_circrna_accumulation.xlsx', sheet = 2) %>%
+	gather('sample', 'count', contains('reads,')) %>%
+	separate(sample, into = c(NA, NA, 'sample', 'n_days'), extra = 'drop',sep = "[ ]") %>%
+	mutate(n_days = as.integer(gsub("\\(|\\)|d", "", n_days)))
+
+rfp_circ_counts <- read_excel('../../data/nagarjuna_2017_ribo_circs.xlsx', skip = 43)
+```
+
+```{r filter_rfp_circs, echo = F}
+# get only the circles which have enough RFP reads... Most of them are VERY low
+candidates <- rfp_circ_counts %>%
+	dplyr::select(-contains('linear')) %>%
+	gather('head', 'bs_count', head1.circ:head4.circ) %>%
+	group_by(circID, name) %>%
+	summarise(mean_count = mean(bs_count)) %>%
+	separate(name, into = c('gene_name', 'gene_id'), sep =':') %>%
+	filter(mean_count >= 0.75)
+```
+
+```{r check_translated_circs_accumulation, echo = F}
+accumulation_sig_circs %>%
+	filter(closest.gene.symbol %in% (candidates %$% gene_name))
+```
+
