@@ -24,9 +24,20 @@ clean_reads = clean_reads_path + read_suffix
 # extract 4 umis from both side
 umi_extraction_regex = "'(?P<umi_1>.{4}).*(?P<umi_2>.{4})'"
 
+# mapping steps:
+# first we map to rRNA
+dm6_rRNA_bowtie_index = '/data/rajewsky/indices/dm6_rRNA_bowtie_1.2.2/dm6_rRNA'
+
+mapping_root = root_data_dir + 'mapping/'
+
+# ribodepletion logs
+ribo_depletion_path = mapping_root + 'ribo_depletion/'
+ribo_depletion_log = ribo_depletion_path + '{sample}.log'
+ribo_depletion_pipe = ribo_depletion_path + '{sample}.pipe.fasta'
+ribo_depletion_mapped = ribo_depletion_path + '{sample}.mapped.sam'
+
 # tophat output
-tophat_out_path = root_data_dir + 'mapping/'
-#tophat_out = [mapped_reads_path + '{sample}' + suffix for suffx in ['.mapped.bam']]
+tophat_out_path = mapping_root + 'tophat/'
 tophat_out = tophat_out_path + "{sample}"
 
 rule all:
@@ -68,16 +79,27 @@ rule get_umis:
 	shell:
 		"umi_tools extract --stdin={input} --bc-pattern={umi_extraction_regex} --extract-method=regex --log={params.log_file} --stdout={output}"
 		
-rule map_with_tophat:
+rule deplete_r_rna:
 	input:
 		clean_reads
 	output:
+		pipe_out= temp(ribo_depletion_pipe),
+		mapped= temp(ribo_depletion_mapped),
+		logfile= ribo_depletion_log
+	threads: 4
+	shell:
+		"bowtie -p {threads} --un {output.pipe_out} -v 0 {dm6_rRNA_bowtie_index} {input} > {output.mapped} 2> {output.logfile}" 
+
+rule map_with_tophat:
+	input:
+		ribo_depletion_pipe
+	output:
 		directory(tophat_out)
-	threads: 8
+	threads: 4
 	shell:
 		"""
 		tophat 	--no-coverage-search --bowtie1 --max-intron-length 260000 --num-threads {threads} --max-multihits 1 \
-			--GTF {dm6_gtf} --no-novel-juncs --transcriptome-index {dm6_tophat_tx_index} \
+			--GTF {dm6_gtf} --no-novel-juncs --transcriptome-index {dm6_tophat_tx_index} --read-mismatches 0 \
 			--library-type fr-firststrand --output-dir {output} {bowtie1_index} {input}
 		"""
 
