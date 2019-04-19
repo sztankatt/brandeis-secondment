@@ -25,32 +25,48 @@ library(magrittr)
 ```
 
 ```{r load_data, echo = F}
-
 # normalised circRNA: (n_bs_juncs / 1 million ) / rpkm_host-_gene. mathematically this doesn't make much sense, as relationship between circs and linear transcripts is non-linear
 accumulation_counts <- read_excel('../../data/westholm_2014_circrna_accumulation.xlsx')
 
 # signitifant circs with log2FoldChange > 2, p < 0.05
 accumulation_sig_circs <- read_excel('../../data/westholm_2014_circrna_accumulation.xlsx', sheet = 2) %>%
-	gather('sample', 'count', contains('reads,')) %>%
-	separate(sample, into = c(NA, NA, 'sample', 'n_days'), extra = 'drop',sep = "[ ]") %>%
-	mutate(n_days = as.integer(gsub("\\(|\\)|d", "", n_days)))
+	dplyr::rename(gene_name = closest.gene.symbol) 
+	# gather('sample', 'count', contains('reads,')) %>%
+	# separate(sample, into = c(NA, NA, 'sample', 'n_days'), extra = 'drop',sep = "[ ]") %>%
+	# mutate(n_days = as.integer(gsub("\\(|\\)|d", "", n_days)))
 
-rfp_circ_counts <- read_excel('../../data/nagarjuna_2017_ribo_circs.xlsx', skip = 43)
+rfp_circ_counts <- read_excel('../../data/nagarjuna_2017_ribo_circs.xlsx', skip = 43) %>%
+	separate(name, into = c('gene_name', 'gene_id'), sep =':')
 ```
 
 ```{r filter_rfp_circs, echo = F}
 # get only the circles which have enough RFP reads... Most of them are VERY low
-candidates <- rfp_circ_counts %>%
-	dplyr::select(-contains('linear')) %>%
+rfp_circ_counts_filtered <- rfp_circ_counts %>%
+	dplyr::select(-contains('linear'))
+
+candidates <- rfp_circ_counts_filtered %>%
 	gather('head', 'bs_count', head1.circ:head4.circ) %>%
-	group_by(circID, name) %>%
+	group_by(circID, gene_name, gene_id) %>%
 	summarise(mean_count = mean(bs_count)) %>%
-	separate(name, into = c('gene_name', 'gene_id'), sep =':') %>%
 	filter(mean_count >= 0.75)
 ```
 
 ```{r check_translated_circs_accumulation, echo = F}
-accumulation_sig_circs %>%
-	filter(closest.gene.symbol %in% (candidates %$% gene_name))
-```
+library(ggrepel)
+joined_data <- rfp_circ_counts %>%
+	left_join(accumulation_sig_circs, by ='gene_name') %>%
+	mutate(fold.change = ifelse(is.na(fold.change), 0, fold.change),
+		   label = ifelse(all_samples.circ > 2 |  fold.change > 5, gene_name, ''))
 
+joined_data %>%
+	ggplot(aes(all_samples.circ, fold.change, label = label)) +
+		geom_vline(xintercept = 2, linetype = 'dashed', color = 'red', alpha = 0.8)+
+		geom_point(alpha = 0.8) +
+		geom_label_repel(size = 3, nudge_x = 0.5, xlim = c(3, NA), ylim = c(1, NA)) +
+		scale_y_continuous(labels = c('ND', 5, 10, 15), breaks = c(0,5,10,15)) +
+		labs(y = 'Fold change 20d vs 1d',
+			 x = '# of RFP reads spanning the BS junction, in all replicates') +
+		ggtitle('Some translated circRNAs accumulate with age')
+
+write_excel_csv(big_table, '../../data/joined_table.csv')
+```
