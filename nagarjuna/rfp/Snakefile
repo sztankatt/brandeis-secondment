@@ -39,10 +39,22 @@ ribo_depletion_mapped = ribo_depletion_path + '{sample}.mapped.sam'
 # tophat output
 tophat_out_path = mapping_root + 'tophat/'
 tophat_out = tophat_out_path + "{sample}"
+tophat_out_mapped = tophat_out + '/accepted_hits.bam'
+tophat_out_indexed = tophat_out_mapped + '.bai'
+
+deduped_out_path = mapping_root + 'deduped/'
+deduped_out = deduped_out_path + '{sample}.bam'
+deduped_log = deduped_out_path + '{sample}.log'
+
+# feature counts out
+fc_out_path = root_data_dir + 'counts/'
+fc_out = fc_out_path + 'feature_counts.rds'
+fc_in = expand(deduped_out, sample = samples)
 
 rule all:
 	input:
-		expand(tophat_out, sample=samples)
+		expand(tophat_out, sample=samples),
+		fc_out
 
 # download from ena instead of SRA
 rule download_sra:
@@ -55,6 +67,14 @@ rule download_sra:
 		"""
 		wget -x -O {output} {params.sample_prefix}{params.sample_sra}.fastq.gz
 		"""
+
+rule index_bam_file:
+	input:
+		'{file}.bam'
+	output:
+		'{file}.bam.bai'
+	shell:
+		"samtools index {input}"
 
 rule trim_with_flexbar:
 	input:
@@ -94,17 +114,36 @@ rule map_with_tophat:
 	input:
 		ribo_depletion_pipe
 	output:
-		directory(tophat_out)
+		temp(tophat_out_mapped)
+	params:
+		out_dir= lambda wildcards: expand(tophat_out, sample = wildcards.sample)
 	threads: 4
 	shell:
 		"""
 		tophat 	--no-coverage-search --bowtie1 --max-intron-length 260000 --num-threads {threads} --max-multihits 1 \
 			--GTF {dm6_gtf} --no-novel-juncs --transcriptome-index {dm6_tophat_tx_index} --read-mismatches 0 \
-			--library-type fr-firststrand --output-dir {output} {bowtie1_index} {input}
+			--library-type fr-firststrand --output-dir {params.out_dir} {bowtie1_index} {input}
+
+		samtools index {output}/accepted_hits.bam 
 		"""
 
 rule remove_pcr_duplicates:
 	input:
-		'mapping/{sample}/accepted_hits.bam'
+		mapped= tophat_out_mapped,
+		index= tophat_out_indexed
 	output:
-		'mapping/{sample}/dedupped.bam'
+		out= deduped_out,
+		logfile= deduped_log
+	shell:
+		"umi_tools dedup --stdin={input.mapped} --log={output.logfile} > {output.out}"
+
+rule count_features:
+	input:
+		fc_in
+	output:
+		fc_out		
+	params:
+		annotation= dm6_gtf
+	threads: 16
+	script:
+		'code/R/featureCounts.R'
