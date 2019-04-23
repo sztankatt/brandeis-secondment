@@ -3,8 +3,7 @@
 		"ld_1": "002/SRR3297802/SRR3297802",
 		"ld_2": "003/SRR3297803/SRR3297803",
 		"hd_1": "004/SRR3297804/SRR3297804",
-		"hd_2": "005/SRR3297805/SRR3297805",
-		"test": "asd"
+		"hd_2": "005/SRR3297805/SRR3297805"
 	},
 	"ena_prefix": "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR329/"
 }

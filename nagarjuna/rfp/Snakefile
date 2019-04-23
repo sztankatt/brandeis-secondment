@@ -5,8 +5,8 @@ samples = config['samples'].keys()
 bowtie1_index = '/data/rajewsky/indices/dm6_bowtie_1.1.1/dm6.fa'
 missmatches = 0
 illumina_adaptors = '../../shared/illumina_adaptors.fa'
-dm6_gtf = '/data/rajewsky/annotation/dm6/ensGene.proper_gene_id.gtf'
-dm6_tophat_tx_index = '/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper_gene_id'
+dm6_gtf = '/data/rajewsky/annotation/dm6/latest/ensGene.proper.gtf'
+dm6_tophat_tx_index = '/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper'
 
 root_data_dir = 'data/'
 
@@ -53,7 +53,6 @@ fc_in = expand(deduped_out, sample = samples)
 
 rule all:
 	input:
-		expand(tophat_out, sample=samples),
 		fc_out
 
 # download from ena instead of SRA
@@ -123,14 +122,12 @@ rule map_with_tophat:
 		tophat 	--no-coverage-search --bowtie1 --max-intron-length 260000 --num-threads {threads} --max-multihits 1 \
 			--GTF {dm6_gtf} --no-novel-juncs --transcriptome-index {dm6_tophat_tx_index} --read-mismatches 0 \
 			--library-type fr-firststrand --output-dir {params.out_dir} {bowtie1_index} {input}
-
-		samtools index {output}/accepted_hits.bam 
 		"""
 
 rule remove_pcr_duplicates:
 	input:
 		mapped= tophat_out_mapped,
-		index= tophat_out_indexed
+		index= temp(tophat_out_indexed)
 	output:
 		out= deduped_out,
 		logfile= deduped_log
