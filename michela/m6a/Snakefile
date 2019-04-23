@@ -95,7 +95,7 @@ rule run_esat:
 	output:
 		esat_output
 	params:
-		annotation= '../../shared/annotations/gene2transcript.txt',
+		annotation= load_shared('annotations/gene2transcript.txt'),
 		out_prefix= esat_output_prefix 
 	shell:
 		"""
