@@ -27,6 +27,12 @@ fastqc_suffixes = ['.zip', '.html']
 fastqc_output_dir = 'fastqc'
 fastqc_output = [fastqc_output_dir + '/m6A_{sample}_R2_001_fastqc' + suffix for suffix in fastqc_suffixes]
 
+m6a_motif = 'data/m6a_meme_motif.txt'
+candidates_path = 'data/candidates/'
+candidates_fa = candidates_path + 'candidates.fa'
+control_seqs_fa = candidates_path + 'control_seqs.fa'
+ame_out_dir = 'data/ame_out'
+
 subworkflow load_shared:
 	workdir:
 		"../../shared"
@@ -41,6 +47,7 @@ rule all:
 		expand(esat_output, sample=samples),
 		expand(fastqc_output, sample=samples),
 		expand('data/bigwig/raw/{sample}.bw', sample=samples),
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
 		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
 
 rule kallisto_quant:
@@ -165,3 +172,19 @@ rule create_normalised_bigwig:
 			--binSize 5 \
 			--filterRNAstrand {wildcards.strand} 
 		"""
+
+rule create_meme_motif_file:
+	output:
+		m6a_motif
+	shell:
+		"iupac2meme RRACU > {output}"
+
+rule run_motif_search:
+	input:
+		motif= m6a_motif,
+		candidates= candidates_fa,
+		control= control_seqs_fa
+	output:
+		ame_out_dir
+	shell:
+		"ame --control {input.control} --method ranksum {input.candidates} {input.motif}"
