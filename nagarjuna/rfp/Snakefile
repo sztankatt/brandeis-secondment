@@ -4,6 +4,9 @@ samples = config['samples'].keys()
 #samples = ['test']
 bowtie1_index = '/data/rajewsky/indices/dm6_bowtie_1.1.1/dm6.fa'
 missmatches = 0
+# min and max readlength for mapped reads filtering
+min_read_length = 27
+max_read_length = 33
 illumina_adaptors = '../../shared/illumina_adaptors.fa'
 dm6_gtf = '/data/rajewsky/annotation/dm6/latest/ensGene.proper.gtf'
 dm6_tophat_tx_index = '/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper'
@@ -45,14 +48,23 @@ tophat_out_indexed = tophat_out_mapped + '.bai'
 deduped_out_path = mapping_root + 'deduped/'
 deduped_out = deduped_out_path + '{sample}.bam'
 deduped_log = deduped_out_path + '{sample}.log'
+deduped_filtered_out = deduped_out_path + '{sample}_filtered.bam'
+
+read_dist_suffix = '_read_length_dist.txt'
+read_dist_out = deduped_out_path + '{sample}' + read_dist_suffix
 
 # feature counts out
 fc_out_path = root_data_dir + 'counts/'
 fc_out = fc_out_path + 'feature_counts.rds'
-fc_in = expand(deduped_out, sample = samples)
+fc_in = expand(deduped_filtered_out, sample = samples)
+
+bigwig_out_path = root_data_dir + 'bigwig/'
+bigwig_out = bigwig_out_path + '{sample}.{strand}.bw'
 
 rule all:
 	input:
+		expand(read_dist_out, sample=samples),
+		expand(bigwig_out, sample=samples, strand=['forward', 'reverse']),
 		fc_out
 
 # download from ena instead of SRA
@@ -71,9 +83,17 @@ rule index_bam_file:
 	input:
 		'{file}.bam'
 	output:
-		'{file}.bam.bai'
+		temp('{file}.bam.bai')
 	shell:
 		"samtools index {input}"
+
+rule get_read_length_dist:
+	input:
+		'{file}.bam'
+	output:
+		'{file}' + read_dist_suffix
+	shell:
+		 'samtools view {input} | awk \'{{print(length($10))}}\' | sort | uniq -c > {output}'
 
 rule trim_with_flexbar:
 	input:
@@ -124,15 +144,25 @@ rule map_with_tophat:
 			--library-type fr-firststrand --output-dir {params.out_dir} {bowtie1_index} {input}
 		"""
 
+ruleorder:  filter_reads_length > remove_pcr_duplicates
+
 rule remove_pcr_duplicates:
 	input:
 		mapped= tophat_out_mapped,
-		index= temp(tophat_out_indexed)
+		index= tophat_out_indexed
 	output:
 		out= deduped_out,
 		logfile= deduped_log
 	shell:
 		"umi_tools dedup --stdin={input.mapped} --log={output.logfile} > {output.out}"
+
+rule filter_reads_length:
+	input:
+		deduped_out
+	output:
+		temp(deduped_filtered_out)
+	shell:
+		'samtools view -h {input} | awk \'length($10)>={min_read_length} && length($10)<={max_read_length} || $1 ~ /^@/ \' | samtools view -hub > {output}'
 
 rule count_features:
 	input:
@@ -144,3 +174,17 @@ rule count_features:
 	threads: 16
 	script:
 		'code/R/featureCounts.R'
+
+rule create_normalised_bigwig:
+	input:
+		mapped_reads=deduped_filtered_out,
+		index=deduped_filtered_out + '.bai'
+	output:
+		'data/bigwig/{sample}.{strand}.bw'
+	shell:
+		"""
+		bamCoverage --bam {input.mapped_reads} -o {output} \
+			--normalizeUsing RPKM \
+			--binSize 1 \
+			--filterRNAstrand {wildcards.strand} 
+		"""
