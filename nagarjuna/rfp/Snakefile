@@ -29,7 +29,7 @@ umi_extraction_regex = "'(?P<umi_1>.{4}).*(?P<umi_2>.{4})'"
 
 # mapping steps:
 # first we map to rRNA
-dm6_rRNA_bowtie_index = '/data/rajewsky/indices/dm6_rRNA_bowtie_1.2.2/dm6_rRNA'
+dm6_rRNA_bowtie_index = '/data/rajewsky/indices/dm6_rRNA_tRNA_snRNA_bowtie_1.2.2/dm6_rRNA_tRNA_snRNA'
 
 mapping_root = root_data_dir + 'mapping/'
 
