@@ -2,7 +2,8 @@ configfile: "config.yaml"
 
 rule all:
 	input:
-		'genomes/dm6.fa'
+		'genomes/dm6.fa',
+		'annotations/dm6.gtf'
 
 rule download_file:
 	params:

@@ -45,6 +45,8 @@ theme_update(plot.title = element_text(hjust = 0),
 			 strip.text.y = element_text(margin = margin(c(3,3,3,3))))
 
 wd <- '../../'
+
+options(knitr.table.format = "markdown")
 ```
 
 ```{r get_gene_name_id_map, echo = F}
@@ -60,11 +62,12 @@ txs <- ensembl %>%
 						 'external_transcript_name',
 						 'start_position', 
 						 'end_position', 
-						 'strand'),
+						 'strand',
+						 'gene_biotype'),
 		  mart = .) %>%
 	as_tibble
 
-colnames(txs) <- c('gene_id', 'tx_id', 'gene_name', 'tx_name', 'gene_start', 'gene_end', 'strand') 
+colnames(txs) <- c('gene_id', 'tx_id', 'gene_name', 'tx_name', 'gene_start', 'gene_end', 'strand', 'gene_biotype')
 
 txs <- txs %>% mutate(gene_length = gene_end - gene_start)
 
@@ -78,8 +81,6 @@ genes <- txs %>%
 config = read_yaml('../../config.yaml')
 samples <- config$samples
 ```
-
-# Initials analysis
 
 ```{r parse_star_logfiles, echo = F}
 star_log <- samples %>%
@@ -125,6 +126,8 @@ esat_counts <- samples %>%
 	inner_join(genes, by = 'gene_id') %>%
 	# we need to group before tmp counting...
 	group_by(condition, replicate) %>%
+	# look at only mRNAs for now
+	filter(gene_biotype == 'protein_coding') %>%
 	mutate(tpm = count / gene_length,
 		   tpm = tpm / sum(tpm) * 1e6)
 ```
@@ -178,7 +181,7 @@ count_matrix <- esat_counts %>%
 # get the columns into the right order
 count_matrix <- count_matrix[,sample_metadata$sample]
 
-dds <- DESeqDataSetFromMatrix(countData = count_matrix,
+m6a_dds <- DESeqDataSetFromMatrix(countData = count_matrix,
 							  colData = sample_metadata %>% {data.frame(., row.names = .$sample)},
 							  design = ~ replicate + condition )
 ```
@@ -186,7 +189,7 @@ dds <- DESeqDataSetFromMatrix(countData = count_matrix,
 From the below PCA plot we can clearly see, that replicate 3 is an outlier, it is therefore probably better to not take it into account.
 
 ```{r pca_analysis, echo = F}
-vsd <- vst(dds, blind=FALSE)
+vsd <- vst(m6a_dds, blind=FALSE)
 pca <- DESeq2::plotPCA(vsd, intgroup=c('condition', 'replicate'), returnData=T) %>%
 	as_tibble
 
@@ -497,6 +500,57 @@ enrichment_comparison_data %>%
 		ggtitle('Enrichment of IP vs input', 'Enrichment of IP/input for all 3 replicates')
 ```
 
+#### Compare the ranks of the enrichment
+
+From the plot above it is clear that IP\_3 is a bit off, as compared to the other two replicates. In order to see if the distributions are similar, we first converted the TPM enrichment values (IP/input) into a rank table, then tested whether the ranks are similar between the conditions with a Kruskal-Wallis test.
+
+```{r compute_enrichment_ranks, echo = F}
+enrichment_ranks <- enrichment_data %>%
+	# select only IP
+	filter(pull_down_condition == 'IP') %>%
+	# first filter the data according to input count and pull down tpm
+	filter(input_count > 4,  pull_down_tpm > 0.1) %>%
+	# prepend IP to each replicate
+	mutate(replicate = paste0(pull_down_condition, '_', replicate)) %>%
+	# drop some variables
+	dplyr::select(-pull_down_tpm, -input, -input_count) %>%
+	# spread the tpm enrichment values so that we can filter each which is non finite
+	spread(replicate, tpm_enrichment) %>%
+	filter(is.finite(IP_1), is.finite(IP_2), is.finite(IP_3)) %>%
+	gather('replicate', 'tpm', IP_1:IP_3) %>%
+	group_by(replicate) %>%
+	# calculate rank: this will be in the opposite order, with rank 1 being the smallest enrichment
+	mutate(rank = min_rank(tpm)) %>%
+	# convert it correct rank order
+	mutate(rank = max(rank) - rank) %>%
+	# drop tpm before spreading the data into 3 columns
+	dplyr::select(-tpm) %>%
+	spread(replicate, rank)
+```
+
+The pairwise results are below. It can be seen, that differences between the distributions cannot be established, as the p-values are big. Which makes the samples directly comparable.
+
+```{r perform_wilcox_tests, echo = F}
+get_wilcox_res <- function(data, x, y){
+	res <- wilcox.test(data[[x]], data[[y]], alternative = 'two.sided')
+	res <- data.frame(p.value = res$p.value, data.name = res$data.name)
+
+	res
+}
+
+test_res <- enrichment_ranks %>% {
+		rbind(
+		  get_wilcox_res(., 'IP_1', 'IP_2'),
+		  get_wilcox_res(., 'IP_1', 'IP_3'),
+		  get_wilcox_res(., 'IP_3', 'IP_2')
+		)
+	}
+
+test_res$data.name = c('IP_1 vs IP_2', 'IP_1 vs IP_3', 'IP_3 vs IP_2')
+
+kable(test_res)
+```
+
 #### Identify consistently enriched candidates
 
 To identify consistently enriched we first filtered the genes as follows:
@@ -580,7 +634,7 @@ In total there are `r nrow(filter(candidates_ip, sig == T))`/`r nrow(filter(cand
 # define candidate differences: between IP and IgG
 enrichment_diff <- filtered_data %>%
 	ungroup() %>%
-	# only get
+	# only get genes which pass the filter, set above 
 	filter(passing_filter == 3 | pull_down_condition == 'IgG') %>%
 	transmute(gene_name = gene_name,
 			  condition = pull_down_condition,
@@ -597,7 +651,7 @@ enrichment_diff <- filtered_data %>%
 # we plot the same plot as above, but this time only using the genes for which there is a difference between IP and IgG enrichment
 candidates_ip_diff <- candidates_ip %>%
 	# show only candidates, for which IP enrichment is bigger than 0
-	filter(gene_name %in% (enrichment_diff %>% filter(enrichment_diff > 0) %$% gene_name))
+	filter(gene_name %in% (enrichment_diff %>% filter(enrichment_diff > 2) %$% gene_name))
 
 candidates_ip_diff %>%
 	ip_candidate_plot(plot_title = 'Enriched genes IP/input without IgG background', filters = filter_ip)
@@ -610,7 +664,6 @@ Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(f
 
 ```{r plot_igg_vs_ip_enrichment, echo = F}
 pl_in <- enrichment_diff %>%
-	filter(IgG < 10) %>%
 	mutate(sig = enrichment_diff > 2)
 
 pl_in %>%
@@ -674,7 +727,6 @@ candidate_gene_names <- enrichment_diff %>%
 	filter(enrichment_diff > 2) %$%
 	gene_name
 
-
 # get esat counts, and filter only the IP's, and get the median of those
 counts_for_fasta <- esat_counts %>%
 	filter(condition == 'IP') %>%
@@ -694,10 +746,10 @@ counts_for_fasta <- genes %>%
 	filter(gene_id %in% names(gene_sequences))
 
 # we don't need this, as we compare candidates to rest...
-#candidate_seq <- gene_sequences[counts_for_fasta %>% filter(is_candidate) %$% gene_id]
+candidate_seq <- gene_sequences[counts_for_fasta %>% filter(is_candidate) %$% gene_id]
 #names(candidate_seq) <- counts_for_fasta %>% filter(gene_id %in% names(candidate_seq)) %$% fasta_name
-#
-#rest_seq <- gene_sequences[counts_for_fasta %>% filter(!is_candidate) %$% gene_id]
+
+rest_seq <- gene_sequences[counts_for_fasta %>% filter(!is_candidate) %$% gene_id]
 #names(rest_seq) <- counts_for_fasta %>% filter(gene_id %in% names(rest_seq)) %$% fasta_name
 
 writeXStringSet(candidate_seq,
@@ -712,18 +764,18 @@ writeXStringSet(rest_seq,
 First we build a DEseq model on the data for IP vs input and IP vs IgG. We build a paired model using the formula  `~ replicate + condition` to account for variability between replicates.
 
 ```{r prepare_deseq, echo = F}
-dds <- DESeq(dds)
+m6a_dds <- DESeq(m6a_dds)
 
-ip_vs_input.res <- results(dds, name = 'condition_IP_vs_input', alpha = 0.01)
-ip_vs_input.resLFC <- lfcShrink(dds, res = ip_vs_input.res, coef = 'condition_IP_vs_input', type = 'apeglm')
+ip_vs_input.res <- results(m6a_dds,name = 'condition_IP_vs_input', alpha = 0.01)
+ip_vs_input.resLFC <- lfcShrink(m6a_dds, res = ip_vs_input.res, coef = 'condition_IP_vs_input', type = 'apeglm') %>%
+	as.data.frame %>%
+	rownames_to_column(var = 'gene_name') %>%
+	as_tibble
 ```
 
 
 ```{r plot_volcano_plot, echo = F}
 ip_vs_input.resLFC %>%
-	as.data.frame %>%
-	rownames_to_column(var = 'gene_name') %>%
-	as_tibble %>%
 	filter(!is.na(padj)) %>%
 	mutate(sig = ifelse(log2FoldChange > log2(3) & padj < 0.01, T, F)) %>%
 	ggplot(aes(log2FoldChange, -log10(padj))) +
@@ -731,8 +783,141 @@ ip_vs_input.resLFC %>%
 		xlim(-3.5, 3.5) +
 		scale_color_manual(values = c('black', 'red')) +
 		ggtitle('Several genes highly enriched IP vs input',
-				'Genes with LFC > 3 and adjusted p < 0.0 colored in red') +
+				'Genes with LFC > 3 and adjusted p < 0.01 colored in red') +
 		theme(legend.position = 'none')
+```
+
+## Uniting with data from RFP (Nagarjuna 2017)
+
+```{r read_fc_output, echo = F}
+rfp_fc <- readRDS(paste0(wd, '../../nagarjuna/rfp/data/counts/feature_counts.rds'))
+
+colnames(rfp_fc$counts) <- c('ld_1', 'ld_2', 'hd_1', 'hd_2')
+
+rfp_counts <- rfp_fc$counts %>%
+	as.data.frame
+
+rfp_counts <- rfp_counts %>%
+	rownames_to_column(var = 'gene_id') %>%
+	as_tibble %>%
+	separate(gene_id, into = c('gene_id'), extra = 'drop')
+
+# get gene names from the counts which are not in biomart genes
+n <- rfp_counts %>%
+	filter(!(gene_id %in% genes$gene_id)) %$%
+	gene_id
+
+# we can get these names and convert them to their current symbols using: https://flybase.org/convert/id
+# the output is saved to ../../data/FlyBase_IDs.txt
+
+# get only ones which really changed
+convert_ids <- read_table2(paste0(wd, 'data/FlyBase_IDs.txt')) %>%
+	filter(submitted_id != current_id) %>%
+	dplyr::rename(gene_id = submitted_id) %>%
+	dplyr::select(gene_id, converted_id)
+
+# update the gene_ids
+rfp_counts <- rfp_counts %>%
+	left_join(convert_ids, by = 'gene_id') %>%
+	# if convert id exists
+	mutate(gene_id = ifelse(is.na(converted_id), gene_id, converted_id)) %>%
+	dplyr::select(-converted_id)
+
+# use inner join as all the id should be updated by now
+rfp_counts <- rfp_counts %>%
+	inner_join(genes, by = 'gene_id') %>%
+	filter(!(gene_biotype %in% c('rRNA', 'tRNA', 'snRNA', 'snoRNA')))
+```
+
+```{r calculate_fc_tpm, echo = F}
+rfp_tpm <- rfp_counts %>%
+	gather('experiment', 'count', ld_1:hd_2) %>%
+	group_by(experiment) %>%
+	mutate(tpm = count / gene_length,
+		   tpm = tpm / sum(tpm) * 1e6) %>%
+	dplyr::select(-count) %>%
+	spread(experiment, tpm)
+```
+
+```{r create_deseq_rfp, echo = F}
+rfp_metadata <- data.frame(condition = factor(c('ld', 'ld', 'hd', 'hd'), levels = c('ld', 'hd')),
+						   replicate = c(1,2,1,2),
+						   row.names = c('ld_1', 'ld_2', 'hd_1', 'hd_2'))
+
+dds <- DESeqDataSetFromMatrix(as.matrix(rfp_fc$counts),
+							  colData = rfp_metadata,
+							  design = ~condition)
+
+dds <- DESeq(dds) 
+
+res <- results(dds, alpha = 0.01)
+resLFC <- lfcShrink(dds = dds, res = res, coef = 'condition_hd_vs_ld') %>%
+	data.frame %>%
+	rownames_to_column(var = 'gene_id') %>%
+	as_tibble %>%
+	left_join(genes, by = 'gene_id')
+```
+
+```{r plot_enriched_genes_tpm_by_rank, echo = F, fig.width = 10, fig.height = 7}
+library(mgcv)
+sig_genes_up <- resLFC %>%
+	filter(log2FoldChange > 1, padj < 0.01) %$%
+	gene_id
+
+rfp_tpm_ranked <- rfp_tpm %>%
+	filter(gene_id %in% sig_genes_up) %>%
+	arrange(desc(hd_1 + hd_2 - ld_1 - ld_2)) %>%
+	mutate(rank = 1:n()) 
+
+rfp_tpm_ranked %>%
+	filter(gene_id %in% sig_genes_up) %>%
+	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
+	separate('experiment', into = c('condition', 'replicate')) %>%
+	ggplot(aes(rank, tpm, color = condition)) +
+		geom_smooth(aes(linetype=replicate)) + 
+		geom_point(size = 0.7, alpha = 0.5) +
+		geom_rug(sides = 'l', alpha=0.1, position = 'jitter') +
+		scale_color_manual(values=wes_palette(n=2, name="Darjeeling1")) +
+		scale_y_log10()
+```
+
+```{r plot_enriched_genes_tpm_density, echo =F}
+rfp_tpm_ranked %>%
+	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
+	separate('experiment', into = c('condition', 'replicate')) %>%
+	mutate(log_tpm = log10(tpm)) %>%
+	filter(gene_biotype == 'protein_coding') %>%
+	ggplot(aes(log_tpm, fill = condition)) +
+		geom_density(alpha = 0.7)+
+		scale_fill_manual(values=wes_palette(n=2, name="Darjeeling1"))
+
+
+rfp_tpm_ranked %>%
+	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
+	separate('experiment', into = c('condition', 'replicate')) %>%
+	filter(condition == 'hd', tpm > 100) %$%
+	gene_biotype %>%
+	table
+```
+
+```{r plot_ld_vs_hd_tpm, echo = F}
+rfp_tpm_ranked %>%
+	filter(gene_id %in% sig_genes_up) %>%
+	mutate(ld = log10((ld_1 + ld_2) / 2),
+		   hd = log10((hd_1 + hd_2) / 2)) %>%
+	ggplot(aes(hd, ld)) +
+		geom_point(aes(color = (hd - ld) > 1)) +
+		coord_fixed()
+```
+
+
+### Volcano plot of LD vs HD
+
+```{r plot_ld_vs_hd_volcano, echo = F}
+resLFC %>%
+	mutate(neg_log10_p = -1 * log10(padj)) %>%
+	ggplot(aes(log2FoldChange, neg_log10_p)) +
+		geom_point(alpha = 0.5, size = 1)
 ```
 
 ---
