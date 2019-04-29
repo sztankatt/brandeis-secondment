@@ -644,6 +644,8 @@ enrichment_diff <- filtered_data %>%
 	spread(condition, selected_enrichment) %>%
 	# calculate the difference between IP and IgG
 	mutate(enrichment_diff = IP - IgG) %>%
+	dplyr::rename(median_IP_enrichment = IP,
+				  median_IgG_enrichment = IgG) %>%
 	filter(is.finite(enrichment_diff))
 ```
 
@@ -664,19 +666,21 @@ Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(f
 
 ```{r plot_igg_vs_ip_enrichment, echo = F}
 pl_in <- enrichment_diff %>%
-	mutate(sig = enrichment_diff > 2)
+	left_join(ip_vs_input.resLFC, by='gene_name') %>%
+	mutate(sig = log2FoldChange > 1 & padj < 0.05)
 
 pl_in %>%
-	ggplot(aes(IP, IgG, color = sig)) +
-		geom_point(size = 0.9, alpha = 0.7) +
+	ggplot(aes(median_IP_enrichment, median_IgG_enrichment, color = sig)) +
+		geom_point(size = 0.7, alpha = 0.5) +
 		scale_y_continuous(breaks = 0:10, limits = c(0,10)) +
 		scale_x_continuous(breaks = 0:10, limits = c(0,10)) +
 		scale_color_manual(values = c('black', 'red')) +
 		coord_fixed() +
 		theme(legend.position = 'none') +
 		labs(x = 'median(m6A/input)', y = 'median(IgG/input)') +
-		ggtitle('IP vs IgG enrichment', '(IP - IgG)/input > 2 in red')
+		ggtitle('IP vs IgG enrichment', 'IP vs input enriched genes in red')
 ```
+
 
 ```{r get_genome_and_gtf, echo = F}
 library(BSgenome)
@@ -722,35 +726,56 @@ gene_sequences <- llply(gene_exons, function(gene){
 DNAStringSet
 ```
 
+
+```{r save_sig_candidates, echo = F}
+big_table_enrichment_diff <- enrichment_diff %>%
+	inner_join(big_table, by = 'gene_name') %>%
+	dplyr::rename(median_enrichment_diff = enrichment_diff) %>%
+	arrange(desc(median_enrichment_diff)) %>%
+	inner_join(ip_vs_input.resLFC %>%
+			   	dplyr::select(gene_name, padj, log2FoldChange), by = 'gene_name') %>%
+	dplyr::rename(p_value = padj)
+
+candidate_table <- big_table_enrichment_diff %>%
+	filter(median_enrichment_diff > 2, log2FoldChange > 1, p_value < 0.05) %>%
+	dplyr::select(-log2FoldChange)
+
+candidate_table %>%
+	write_excel_csv(paste0(wd, 'data/candidate_expression.csv'))
+```
+
 ```{r save_sequences, echo = F}
-candidate_gene_names <- enrichment_diff %>%
-	filter(enrichment_diff > 2) %$%
-	gene_name
+candidate_ids <- genes %>%
+	filter(gene_name %in% candidate_table$gene_name) %$%
+	gene_id
+
+rest_ids <- genes %>%
+	filter(!(gene_name %in% candidate_table$gene_name)) %>%
+	filter(gene_biotype == 'protein_coding', gene_id %in% names(gene_sequences)) %$%
+	gene_id
 
 # get esat counts, and filter only the IP's, and get the median of those
-counts_for_fasta <- esat_counts %>%
-	filter(condition == 'IP') %>%
-	group_by(gene_id) %>%
-	summarise(tpm = median(tpm))
+# counts_for_fasta <- esat_counts %>%
+# 	filter(condition == 'IP') %>%
+# 	group_by(gene_id) %>%
+# 	summarise(tpm = median(tpm))
 
 # flag candidates, join original gene tibble together, to account for dropouts
-counts_for_fasta <- genes %>%
-	# flag the candidates in the original gene table
-	mutate(is_candidate = gene_name %in% candidate_gene_names) %>%
-	# join the median tpm counts for IP
-	left_join(counts_for_fasta, by = 'gene_id') %>%
-	# create names for the fasta output, which contain tpm-s attached to the gene name
-	mutate(tpm = ifelse(is.na(tpm), 0, tpm),
-		   fasta_name = paste0(gene_id, ' ', tpm)) %>%
-	# take only genes for which we have sequences
-	filter(gene_id %in% names(gene_sequences))
+# counts_for_fasta <- genes %>%
+# 	# flag the candidates in the original gene table
+# 	mutate(is_candidate = gene_name %in% candidate_gene_names) %>%
+# 	# join the median tpm counts for IP
+# 	left_join(counts_for_fasta, by = 'gene_id') %>%
+# 	# create names for the fasta output, which contain tpm-s attached to the gene name
+# 	mutate(tpm = ifelse(is.na(tpm), 0, tpm),
+# 		   fasta_name = paste0(gene_id, ' ', tpm)) %>%
+# 	# take only genes for which we have sequences
+# 	filter(gene_id %in% names(gene_sequences))
 
 # we don't need this, as we compare candidates to rest...
-candidate_seq <- gene_sequences[counts_for_fasta %>% filter(is_candidate) %$% gene_id]
-#names(candidate_seq) <- counts_for_fasta %>% filter(gene_id %in% names(candidate_seq)) %$% fasta_name
+candidate_seq <- gene_sequences[candidate_ids]
 
-rest_seq <- gene_sequences[counts_for_fasta %>% filter(!is_candidate) %$% gene_id]
-#names(rest_seq) <- counts_for_fasta %>% filter(gene_id %in% names(rest_seq)) %$% fasta_name
+rest_seq <- gene_sequences[rest_ids]
 
 writeXStringSet(candidate_seq,
 				paste0(wd, 'data/candidates/candidates.fa'))
@@ -772,7 +797,6 @@ ip_vs_input.resLFC <- lfcShrink(m6a_dds, res = ip_vs_input.res, coef = 'conditio
 	rownames_to_column(var = 'gene_name') %>%
 	as_tibble
 ```
-
 
 ```{r plot_volcano_plot, echo = F}
 ip_vs_input.resLFC %>%
@@ -909,7 +933,6 @@ rfp_tpm_ranked %>%
 		geom_point(aes(color = (hd - ld) > 1)) +
 		coord_fixed()
 ```
-
 
 ### Volcano plot of LD vs HD
 
