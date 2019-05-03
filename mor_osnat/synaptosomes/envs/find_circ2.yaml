@@ -1,0 +1,7 @@
+channels:
+    - python
+dependencies:
+    - python=2.7
+    - numpy
+    - pysam
+    - samtools

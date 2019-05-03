@@ -1,0 +1,16 @@
+samples:
+    homog_1: Homog_1_S1_R1_001.fastq.gz
+    homog_2: Homog_2_S6_R1_001.fastq.gz
+    pel1_1: Pel1_1_S3_R1_001.fastq.gz
+    pel1_2: Pel1_2_S8_R1_001.fastq.gz
+    pel2_1: Pel2synap_1_S5_R1_001.fastq.gz
+    pel2_2: Pel2synap_2_S10_R1_001.fastq.gz
+    sup1_1: Sup1_1_S2_R1_001.fastq.gz
+    sup1_2: Sup1_2_S7_R1_001.fastq.gz
+    sup2_1: Sup2_1_S4_R1_001.fastq.gz
+    sup2_2: Sup2_2_S9_R1_001.fastq.gz
+reads_dir: /data/rajewsky/projects/kadener_collab/brandeis_secondment/synaptosomes/fastq/
+bt2_rRNA_index: /data/rajewsky/indices/dm6_rRNA_bowtie2_2.1.0/bt2_dm_rRNA
+star_index: /data/rajewsky/indices/dm6_star_2.7.0/
+bwa_index: /data/rajewsky/indices/dm6_bwa_0.7.12-r1039/dm6.fa
+find_circ2_command: /home/tsztank/repos/find_circ2/find_circ.py
