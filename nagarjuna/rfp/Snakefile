@@ -29,14 +29,14 @@ umi_extraction_regex = "'(?P<umi_1>.{4}).*(?P<umi_2>.{4})'"
 
 # mapping steps:
 # first we map to rRNA
-dm6_rRNA_bowtie_index = '/data/rajewsky/indices/dm6_rRNA_tRNA_snRNA_bowtie_1.2.2/dm6_rRNA_tRNA_snRNA'
+dm6_rRNA_bowtie2_index = '/data/rajewsky/indices/dm6_rRNA_plus_bowtie2_2.3.5/dm6_rRNA_plus'
 
 mapping_root = root_data_dir + 'mapping/'
 
 # ribodepletion logs
 ribo_depletion_path = mapping_root + 'ribo_depletion/'
 ribo_depletion_log = ribo_depletion_path + '{sample}.log'
-ribo_depletion_pipe = ribo_depletion_path + '{sample}.pipe.fasta'
+ribo_depletion_pipe = ribo_depletion_path + '{sample}.pipe.fastq.gz'
 ribo_depletion_mapped = ribo_depletion_path + '{sample}.mapped.sam'
 
 # tophat output
@@ -48,7 +48,9 @@ tophat_out_indexed = tophat_out_mapped + '.bai'
 deduped_out_path = mapping_root + 'deduped/'
 deduped_out = deduped_out_path + '{sample}.bam'
 deduped_log = deduped_out_path + '{sample}.log'
-deduped_filtered_out = deduped_out_path + '{sample}_filtered.bam'
+
+filtered_out_path = mapping_root + 'filtered/'
+filtered_out = filtered_out_path + '{sample}_filtered.bam'
 
 read_dist_suffix = '_read_length_dist.txt'
 read_dist_out = deduped_out_path + '{sample}' + read_dist_suffix
@@ -56,7 +58,7 @@ read_dist_out = deduped_out_path + '{sample}' + read_dist_suffix
 # feature counts out
 fc_out_path = root_data_dir + 'counts/'
 fc_out = fc_out_path + 'feature_counts.rds'
-fc_in = expand(deduped_filtered_out, sample = samples)
+fc_in = expand(filtered_out, sample = samples)
 
 bigwig_out_path = root_data_dir + 'bigwig/'
 bigwig_out = bigwig_out_path + '{sample}.{strand}.bw'
@@ -64,6 +66,7 @@ bigwig_out = bigwig_out_path + '{sample}.{strand}.bw'
 rule all:
 	input:
 		expand(read_dist_out, sample=samples),
+		expand(filtered_out, sample=samples),
 		expand(bigwig_out, sample=samples, strand=['forward', 'reverse']),
 		fc_out
 
@@ -93,7 +96,10 @@ rule get_read_length_dist:
 	output:
 		'{file}' + read_dist_suffix
 	shell:
-		 'samtools view {input} | awk \'{{print(length($10))}}\' | sort | uniq -c > {output}'
+		 """
+		 mkdir -p {filtered_out_path}
+		 samtools view {input} | awk \'{{print(length($10))}}\' | sort | uniq -c > {output}
+		 """
 
 rule trim_with_flexbar:
 	input:
@@ -123,11 +129,12 @@ rule deplete_r_rna:
 		clean_reads
 	output:
 		pipe_out= temp(ribo_depletion_pipe),
-		mapped= temp(ribo_depletion_mapped),
 		logfile= ribo_depletion_log
-	threads: 4
+	threads: 8
 	shell:
-		"bowtie -p {threads} --un {output.pipe_out} -v 0 {dm6_rRNA_bowtie_index} {input} > {output.mapped} 2> {output.logfile}" 
+		"bowtie2 -p {threads} -x {dm6_rRNA_bowtie2_index} -U {input} \
+			--local -D 20 -R 3 -N 0 -L 16 -i S,1,0.5 \
+			--un-gz {output.pipe_out} > /dev/null 2> {output.logfile}"
 
 rule map_with_tophat:
 	input:
@@ -136,7 +143,7 @@ rule map_with_tophat:
 		temp(tophat_out_mapped)
 	params:
 		out_dir= lambda wildcards: expand(tophat_out, sample = wildcards.sample)
-	threads: 4
+	threads: 8
 	shell:
 		"""
 		tophat 	--no-coverage-search --bowtie1 --max-intron-length 260000 --num-threads {threads} --max-multihits 1 \
@@ -160,9 +167,9 @@ rule filter_reads_length:
 	input:
 		deduped_out
 	output:
-		temp(deduped_filtered_out)
+		filtered_out
 	shell:
-		'samtools view -h {input} | awk \'length($10)>={min_read_length} && length($10)<={max_read_length} || $1 ~ /^@/ \' | samtools view -hub > {output}'
+		'samtools view -h {input} | awk \'length($10)>={min_read_length} && length($10)<={max_read_length} || $1 ~ /^@/ \' | samtools view -hb > {output}'
 
 rule count_features:
 	input:
@@ -177,8 +184,8 @@ rule count_features:
 
 rule create_normalised_bigwig:
 	input:
-		mapped_reads=deduped_filtered_out,
-		index=deduped_filtered_out + '.bai'
+		mapped_reads=filtered_out,
+		index=filtered_out + '.bai'
 	output:
 		'data/bigwig/{sample}.{strand}.bw'
 	shell:
