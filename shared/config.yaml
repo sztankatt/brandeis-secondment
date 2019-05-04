@@ -1,7 +1,9 @@
-downloads:
-  transcriptomes:
-    dm6: "ftp://ftp.ensembl.org/pub/release-95/fasta/drosophila_melanogaster/cds/Drosophila_melanogaster.BDGP6.cds.all.fa.gz" 
-  annotations:
-    dm6: 'ftp://ftp.ensembl.org/pub/release-95/gtf/drosophila_melanogaster/Drosophila_melanogaster.BDGP6.95.gtf.gz'
-  genomes:
-    dm6: 'ftp://ftp.ensembl.org/pub/release-95/fasta/drosophila_melanogaster/dna/Drosophila_melanogaster.BDGP6.dna_sm.toplevel.fa.gz'
+transcriptomes:
+    dm6: "/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper.fa"
+annotations:
+    dm6: "/data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper.gff"
+genomes:
+    dm6: "/data/rajewsky/genomes/dm6/dm6.fa"
+indices:
+    dm6:
+        star: "/data/rajewsky/indices/dm6_star_2.7.0/"

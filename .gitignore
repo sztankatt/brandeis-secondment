@@ -5,6 +5,7 @@ shared/*
 !shared/Snakefile
 !shared/config.yaml
 !shared/code
+!shared/envs
 
 # ignore all data folders
 **/data

@@ -1,37 +1,57 @@
 configfile: "config.yaml"
 
-raw_read_pattern= config['dirs']['reads'] + "m6A_{sample}_R2_001.fastq.gz"
-samples = config['samples']
+samples = config['samples'].keys()
+
+bt2_rRNA_index = config['bt2_rRNA_index']
+star_index = config['star_index']
+bwa_index = config['bwa_index']
+
+esat_command = "java -jar /home/tsztank/repos/ESAT/dist/esat.v0.1_05.03.19_22.13.jar"
+
+data_root = 'data/'
+
+raw_read_path = data_root + 'reads/raw/' 
+raw_read_pattern= raw_read_path + '{sample}.fastq.gz'
+
+mapping_root = data_root + 'mapping/'
 
 # kallisto settings
 kallisto_abundance_suffix = 'abundance.h5'
-kallisto_output_dir = config['dirs']['data_out'] + '/kallisto_quant/{sample}/' 
+kallisto_output_dir = data_root + 'kallisto_quant/{sample}/' 
 kallisto_quant_output = kallisto_output_dir + kallisto_abundance_suffix
 
 # star settings
 star_suffix = 'Aligned.sortedByCoord.out.bam'
-star_output_dir = config['dirs']['data_out'] + '/mapping'
-star_output_prefix = star_output_dir + '/{sample}.'
-star_output = star_output_prefix + star_suffix
-star_err_file = star_output_prefix + 'stderr.txt'
-indexed_bam_output = star_output + '.bai'
+star_out_dir = mapping_root
+star_out_prefix = star_out_dir + '{sample}.'
+star_out = star_out_prefix + star_suffix
+star_err_file = star_out_prefix + 'stderr.txt'
+indexed_bam_output = star_out + '.bai'
 
 # esat settings
 esat_suffixes = ['window.txt', 'gene.txt']
-esat_output_dir = config['dirs']['data_out'] + '/esat'
-esat_output_prefix = esat_output_dir + '/{sample}'
+esat_output_dir = data_root + 'esat/'
+esat_output_prefix = esat_output_dir + '{sample}'
 esat_output = [esat_output_prefix + '.' + suffix for suffix in esat_suffixes]
 
-
 fastqc_suffixes = ['.zip', '.html']
-fastqc_output_dir = 'fastqc'
-fastqc_output = [fastqc_output_dir + '/m6A_{sample}_R2_001_fastqc' + suffix for suffix in fastqc_suffixes]
+fastqc_output_dir = 'fastqc/'
+fastqc_output = [fastqc_output_dir + '{sample}_fastqc' + suffix for suffix in fastqc_suffixes]
 
 m6a_motif = 'data/m6a_meme_motif.txt'
 candidates_path = 'data/candidates/'
 candidates_fa = candidates_path + 'candidates.fa'
 control_seqs_fa = candidates_path + 'control_seqs.fa'
-ame_out_dir = 'data/ame_out'
+
+# find circ2
+fc2 = config['find_circ2_command']
+find_circ2_root = mapping_root + 'circrna/' 
+find_circ2_out_path = find_circ2_root + '{sample}/'
+find_circ2_bwa_err = find_circ2_out_path + 'bwa.stderr.log'
+find_circ2_bwa_pipe = find_circ2_out_path + 'bwa_mapped.pipe.bam'
+find_circ2_err = find_circ2_out_path + 'fc.stderr.log'
+find_circ2_out = find_circ2_out_path + 'find_circ_run/'
+
 
 subworkflow load_shared:
 	workdir:
@@ -43,14 +63,24 @@ subworkflow load_shared:
 
 rule all:
 	input:
-		expand(kallisto_quant_output, sample=samples),
+		expand(star_out, sample = samples),
 		expand(esat_output, sample=samples),
 		expand(fastqc_output, sample=samples),
-		expand('data/bigwig/raw/{sample}.bw', sample=samples),
-		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
-		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse'])
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse']),
+		expand('data/bigwig/normalised/{sample}.{strand}.bw', sample=samples, strand=['forward', 'reverse']),
+		expand(find_circ2_out, sample=samples)
+
+
+rule create_read_symlinks:
+	output:
+		raw_read_pattern
+	params:
+		p_link = lambda wildcards: config['reads_dir'] + config['samples'][wildcards.sample]
+	shell:
+		"ln -s {params.p_link} {output}"
 
 rule kallisto_quant:
+	# not used at the moment
 	input:
 		index= load_shared('indices/dm6/kallisto/kallisto.index'),
 		reads= raw_read_pattern
@@ -65,13 +95,13 @@ rule kallisto_quant:
 rule map_with_star:
 	input:
 		reads= raw_read_pattern,
-		index= load_shared('indices/dm6/STAR')
+		index= load_shared('indices/dm6/star')
 	output:
-		star_output
+		star_out
 	threads: 8
 	params:
-		mapping_dir= star_output_dir,
-		out_prefix= star_output_prefix,
+		mapping_dir= star_out_dir,
+		out_prefix= star_out_prefix,
 		err_file= star_err_file
 	shell:
 		"""
@@ -88,7 +118,7 @@ rule map_with_star:
 
 rule create_indexed_bam_file:
 	input:
-		star_output
+		star_out
 	output:
 		indexed_bam_output
 	shell:
@@ -98,7 +128,7 @@ rule create_indexed_bam_file:
 
 rule run_esat:
 	input:
-		star_output
+		star_out
 	output:
 		esat_output
 	params:
@@ -108,10 +138,10 @@ rule run_esat:
 		"""
 		mkdir -p data/esat
 
-		esat 	-in {input} \
-				-geneMapping {params.annotation} \
-				-out {params.out_prefix} \
-				-task score3p
+		{esat_command} 	-in {input} \
+			-geneMapping {params.annotation} \
+			-out {params.out_prefix} \
+			-task score3p
 		"""
 		
 rule create_fastqc:
@@ -129,39 +159,9 @@ rule create_fastqc:
 		fastqc -t {threads} -o {params.fastqc_dir} {input}
 		"""
 
-rule create_bedgraph:
-	input:
-		star_output
-	output:
-		temp('{sample}.bedGraph')
-	shell:
-		"""
-		bedtools genomecov -ibam {input} -bga -split > {output}
-		"""
-
-rule sort_bedgraph:
-	input:
-		'{sample}.bedGraph'
-	output:
-		temp('{sample}.sorted.bedGraph')
-	shell:
-		'LC_COLLATE=C sort -k1,1 -k2,2n {input} > {output}'
-
-rule create_bigwig:
-	input:
-		chrom_sizes= load_shared('chrom_sizes/dm6.chrom.sizes'),
-		bedgraph= '{sample}.sorted.bedGraph'
-	output:
-		'data/bigwig/raw/{sample}.bw'
-	shell:
-		"""
-		mkdir -p data/bigwig
-		bedGraphToBigWig {input.bedgraph} {input.chrom_sizes} {output}
-		"""
-
 rule create_normalised_bigwig:
 	input:
-		mapped_reads=star_output,
+		mapped_reads=star_out,
 		index=indexed_bam_output
 	output:
 		'data/bigwig/normalised/{sample}.{strand}.bw'
@@ -173,18 +173,30 @@ rule create_normalised_bigwig:
 			--filterRNAstrand {wildcards.strand} 
 		"""
 
-rule create_meme_motif_file:
-	output:
-		m6a_motif
-	shell:
-		"iupac2meme RRACU > {output}"
-
-rule run_motif_search:
+rule map_with_bwa_mem:
 	input:
-		motif= m6a_motif,
-		candidates= candidates_fa,
-		control= control_seqs_fa
+		raw_read_pattern
 	output:
-		ame_out_dir
+		bwa_out= pipe(find_circ2_bwa_pipe),
+		bwa_err= find_circ2_bwa_err
+	threads: 8
 	shell:
-		"ame --control {input.control} --method ranksum {input.candidates} {input.motif}"
+		"""
+		bwa mem -t {threads} -k 14 -T 1 -L 3,3 -O 6,6 -E 3,3 {bwa_index} {input} 2> {output.bwa_err} | \
+		samtools view -Sbuh > {output.bwa_out}
+		"""
+
+rule find_circ2:
+	input:
+		find_circ2_bwa_pipe
+	output:
+		fc_out= directory(find_circ2_out)
+	threads: 8
+	params:
+		fc_err= lambda wildcards: expand(find_circ2_err, sample=wildcards.sample)
+	conda:
+		'../../shared/envs/find_circ2.yaml'
+	shell:
+		"""
+		python2 {fc2} --genome {bwa_index} --name {wildcards.sample} --output {output.fc_out} {input} 2> {params.fc_err} 
+		"""

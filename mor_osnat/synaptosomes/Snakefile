@@ -1,7 +1,7 @@
 configfile: 'config.yaml'
 
 samples = config['samples'].keys()
-samples = ['sup2_2']
+
 bt2_rRNA_index = config['bt2_rRNA_index']
 star_index = config['star_index']
 bwa_index = config['bwa_index']
@@ -107,13 +107,11 @@ rule find_circ2:
 		find_circ2_bwa_pipe
 	output:
 		fc_out= directory(find_circ2_out)
-	conda:
-		"envs/find_circ2.yaml"
 	threads: 8
 	params:
 		fc_err= lambda wildcards: expand(find_circ2_err, sample=wildcards.sample)
 	conda:
-		'envs/find_circ2.yaml'
+		'../../shared/envs/find_circ2.yaml'
 	shell:
 		"""
 		python2 {fc2} --genome {bwa_index} --name {wildcards.sample} --output {output.fc_out} {input} 2> {params.fc_err} 
