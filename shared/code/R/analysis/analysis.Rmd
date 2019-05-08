@@ -33,18 +33,21 @@ library(DESeq2)
 library(tximport)
 library(kableExtra)
 library(metaseqR)
+library(topGO)
 ```
 
 ```{r load_functions, echo = F, cache = F}
-source('../../../../shared/code/R/readStarLog.R')
-source('calculateEnrichment.R')
+root_dir <- '../../../../'
+source(paste0(root_dir, 'shared/code/R/readStarLog.R'))
+source(paste0(root_dir, 'shared/code/R/calculateEnrichment.R'))
+source(paste0(root_dir, 'shared/code/R/getGOData.R'))
 
 # set the default title spacing for plots
 theme_update(plot.title = element_text(hjust = 0),
 			 strip.text.x = element_text(margin = margin(c(3,3,3,3))),
 			 strip.text.y = element_text(margin = margin(c(3,3,3,3))))
 
-wd <- '../../'
+michela_m6a_root <- paste0(root_dir, 'michela/m6a/')
 
 options(knitr.table.format = "markdown")
 ```
@@ -75,17 +78,31 @@ genes <- txs %>%
 	dplyr::select(-tx_id, -tx_name) %>%
 	unique %>%
 	mutate(gene_length = gene_end - gene_start)
+
+m_rnas <- genes %>%
+	filter(gene_biotype == 'protein_coding')
+
+go_terms <- ensembl %>%
+	getBM(
+		  attributes = c('ensembl_gene_id',
+						 'go_id'),
+		  mart = .) %>%
+	as_tibble %>%
+	dplyr::rename(gene_id = ensembl_gene_id)
+
+gene_id2go <- go_terms %>%
+	dlply(.(gene_id), function(df){ df$go_id})
 ```
 
 ```{r load_sample_specification, echo = F}
-config = read_yaml('../../config.yaml')
-samples <- config$samples
+config = read_yaml(paste0(michela_m6a_root, 'config.yaml'))
+samples <- config$samples %>% names
 ```
 
 ```{r parse_star_logfiles, echo = F}
 star_log <- samples %>%
 	ldply(function(sample){
-		readStarLog(paste0(wd,'data/mapping/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
+		readStarLog(paste0(michela_m6a_root,'data/mapping/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
 	}) %>%
 	as_tibble %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
@@ -103,7 +120,7 @@ ESAT (ref) is a counting toolkit designed for short 3' or 5' libraries. As a che
 The if we plot the counts and tpm-s (transcript per million) on a log-x scale, we observe a normal distribution which is expected. Also, the mean values of tpm-s are comparable, so it seems there is not big difference between the libraries of the 3 conditions sequenced.
 
 ```{r import_esat_counts, echo = F}
-esat_dir = paste0(wd, 'data/esat/')
+esat_dir = paste0(michela_m6a_root, 'data/esat/')
 esat_counts <- samples %>%
 	# create a dataframe out of counts
 	data.frame(sample = .) %>%
@@ -158,7 +175,7 @@ esat_counts %>%
 sample_metadata <- tibble(sample = samples) %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
 	unite('sample', condition, replicate, remove =F) %>%
-	mutate(condition = factor(condition, levels = c('input', 'IgG', 'IP')),
+	mutate(condition = factor(condition, levels = c('input', 'igg', 'ip')),
 		   replicate = factor(replicate, levels = c('1','2','3'))) %>%
 	# sort tibble by factor
 	arrange(condition)
@@ -186,6 +203,17 @@ m6a_dds <- DESeqDataSetFromMatrix(countData = count_matrix,
 							  design = ~ replicate + condition )
 ```
 
+```{r prepare_deseq, echo = F}
+m6a_dds <- DESeq(m6a_dds)
+
+ip_vs_input.res <- results(m6a_dds,name = 'condition_ip_vs_input', alpha = 0.01)
+ip_vs_input.resLFC <- lfcShrink(m6a_dds, res = ip_vs_input.res, coef = 'condition_ip_vs_input', type = 'apeglm') %>%
+	as.data.frame %>%
+	rownames_to_column(var = 'gene_name') %>%
+	as_tibble
+```
+
+
 From the below PCA plot we can clearly see, that replicate 3 is an outlier, it is therefore probably better to not take it into account.
 
 ```{r pca_analysis, echo = F}
@@ -195,7 +223,7 @@ pca <- DESeq2::plotPCA(vsd, intgroup=c('condition', 'replicate'), returnData=T) 
 
 pca %>%
 	# modify factor level to have consistent colors
-	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%
+	mutate(condition = factor(condition, levels = c('igg', 'input', 'ip'))) %>%
 	ggplot(aes(PC1, PC2, colour = condition, shape = replicate)) + 
 	geom_point(size = 4) +
 	scale_colour_manual(values=wes_palette(n=3, name="GrandBudapest1"))
@@ -206,7 +234,7 @@ pca %>%
 
 First lets look at 3 genes: Clk, tim and vri.
 
-It seems that for these 3 genes, IgG\_3 is an outlier.
+It seems that for these 3 genes, igg\_3 is an outlier.
 
 ```{r plot_genes_of_interest, echo = F, fig.width = 10, fig.height = 5}
 genes_of_interest <- c('vri', 'Clk', 'tim')
@@ -234,11 +262,11 @@ plot_genes(esat_counts, c('mbl'), x_lab = 'gene_name', metric = 'tpm')
 
 ### Correlation between replicates
 
-Next to check any differences between our IP's we looked at correlations between any two IP samples. Overall correlations on the count level are quite good, with IP\_3 being much deeper than the other two samples.
+Next to check any differences between our ip's we looked at correlations between any two ip samples. Overall correlations on the count level are quite good, with ip\_3 being much deeper than the other two samples.
 
-The correlations in the TPM space are a bit worse for IP\_1 vs IP\_3 and IP\_2 vs IP\_3, but still okay.
+The correlations in the TPM space are a bit worse for ip\_1 vs ip\_3 and ip\_2 vs ip\_3, but still okay.
 
-If we downsample IP\_3 to 9 million reads (so that the sample sizes are preferable), the correlations do not change which is the expected behaviour.
+If we downsample ip\_3 to 9 million reads (so that the sample sizes are preferable), the correlations do not change which is the expected behaviour.
 
 
 ```{r correlation_function, echo = F}
@@ -280,27 +308,27 @@ get_cor_plot <- function(data, sx, sy, quant_type = 'count'){
 ##### Raw counts
 
 ```{r plot_counts_correlations, echo = F, fig.height = 3, fig.width = 10}
-plot_grid(get_cor_plot(esat_counts, 'IP_1', 'IP_3'),
-		  get_cor_plot(esat_counts, 'IP_2', 'IP_3'),
-		  get_cor_plot(esat_counts, 'IP_1', 'IP_2'),
+plot_grid(get_cor_plot(esat_counts, 'ip_1', 'ip_3'),
+		  get_cor_plot(esat_counts, 'ip_2', 'ip_3'),
+		  get_cor_plot(esat_counts, 'ip_1', 'ip_2'),
 		  ncol = 3)
 ```
 
 ##### TPMs
 
 ```{r plot_tpm_correlations, echo = F, fig.height = 3, fig.width = 10}
-plot_grid(get_cor_plot(esat_counts, 'IP_3', 'IP_1', quant_type = 'tpm'),
-		  get_cor_plot(esat_counts, 'IP_3', 'IP_2', quant_type = 'tpm'),
-		  get_cor_plot(esat_counts, 'IP_1', 'IP_2', quant_type = 'tpm'),
+plot_grid(get_cor_plot(esat_counts, 'ip_3', 'ip_1', quant_type = 'tpm'),
+		  get_cor_plot(esat_counts, 'ip_3', 'ip_2', quant_type = 'tpm'),
+		  get_cor_plot(esat_counts, 'ip_1', 'ip_2', quant_type = 'tpm'),
 		  ncol = 3)
 ```
 
 #### Downsampled correlations
 
-```{r downsample_IP_values, echo = F, eval = F}
+```{r downsample_ip_values, echo = F, eval = F}
 ip_counts <- esat_counts %>%
 	dplyr::select(condition, replicate, gene_name, count) %>%
-	filter(condition == 'IP') %>%
+	filter(condition == 'ip') %>%
 	unite('sample', condition, replicate) %>%
 	spread(sample, count)
 
@@ -314,7 +342,7 @@ downsampled_ip_counts <- ip_counts %>%
 
 ```{r downsample_ip_3, echo =F}
 ip_3_counts <- esat_counts %>%
-	filter(condition == 'IP', replicate == 3) %>%
+	filter(condition == 'ip', replicate == 3) %>%
 	dplyr::select(gene_name, count) %>% {
 		rep(.$gene_name, .$count)
 	}
@@ -324,7 +352,7 @@ ip_3_downsampled <- ip_3_counts %>%
 	table %>%
 	as.data.frame
 
-colnames(ip_3_downsampled) <- c('gene_name', 'IP_3')
+colnames(ip_3_downsampled) <- c('gene_name', 'ip_3')
 
 ip_3_downsampled <- ip_3_downsampled %>% 
 	mutate(gene_name = as.character(gene_name))
@@ -339,8 +367,8 @@ ip_3_downsampled <- ip_3_downsampled %>%
 # first drop tmp as it will be recalculated
 downsampled_counts <- esat_counts %>%
 	dplyr::select(-tpm) %>%
-	# remove IP samples 
-	filter(condition != 'IP' | replicate != '3') %>%
+	# remove ip samples 
+	filter(condition != 'ip' | replicate != '3') %>%
 	# unite columns into samples
 	unite('sample', condition, replicate) %>%
 	# spread the values before we can inner join with downsampled values
@@ -348,9 +376,9 @@ downsampled_counts <- esat_counts %>%
 	# left join so that we get all the values right, replaced with NA's
 	left_join(ip_3_downsampled, by = 'gene_name') %>%
 	# replace NA's with 0's
-	mutate(IP_3 = ifelse(is.na(IP_3), 0, IP_3)) %>%
+	mutate(ip_3 = ifelse(is.na(ip_3), 0, ip_3)) %>%
 	#gather columns back
-	gather('sample', 'count', IgG_1:IP_3) %>%
+	gather('sample', 'count', igg_1:ip_3) %>%
 	separate(sample, into = c('condition', 'replicate')) %>%
 	group_by(condition, replicate) %>%
 	# recalculate tpm's
@@ -369,18 +397,18 @@ tpms <- downsampled_counts %>%
 ##### Counts
 
 ```{r plot_downsampled_count_correlations, echo = F, fig.height = 3, fig.width = 10}
-plot_grid(get_cor_plot(downsampled_counts, 'IP_3', 'IP_1'),
-		  get_cor_plot(downsampled_counts, 'IP_3', 'IP_2'),
-		  get_cor_plot(downsampled_counts, 'IP_1', 'IP_2'),
+plot_grid(get_cor_plot(downsampled_counts, 'ip_3', 'ip_1'),
+		  get_cor_plot(downsampled_counts, 'ip_3', 'ip_2'),
+		  get_cor_plot(downsampled_counts, 'ip_1', 'ip_2'),
 		  ncol = 3)
 ```
 
 ##### TPM's
 
 ```{r plot_downsampled_tpm_correlations, echo = F, fig.height = 3, fig.width = 10}
-plot_grid(get_cor_plot(downsampled_counts, 'IP_3', 'IP_1', quant_type = 'tpm'),
-		  get_cor_plot(downsampled_counts, 'IP_3', 'IP_2', quant_type = 'tpm'),
-		  get_cor_plot(downsampled_counts, 'IP_1', 'IP_2', quant_type = 'tpm'),
+plot_grid(get_cor_plot(downsampled_counts, 'ip_3', 'ip_1', quant_type = 'tpm'),
+		  get_cor_plot(downsampled_counts, 'ip_3', 'ip_2', quant_type = 'tpm'),
+		  get_cor_plot(downsampled_counts, 'ip_1', 'ip_2', quant_type = 'tpm'),
 		  ncol = 3)
 ```
 
@@ -388,14 +416,14 @@ plot_grid(get_cor_plot(downsampled_counts, 'IP_3', 'IP_1', quant_type = 'tpm'),
 
 ### Enrichment between pull-downs and input
 
-First we look at enrichments between our pull-downs and the input values, to identify genes which are bound to m6A or IgG (negative control). Lets first compare if we see any differences between IP and IgG.
+First we look at enrichments between our pull-downs and the input values, to identify genes which are bound to m6A or igg (negative control). Lets first compare if we see any differences between ip and igg.
 
-#### Enrichment of IP vs in IgG
+#### Enrichment of ip vs in igg
 
 ```{r per_sample_enrichment, echo = F}
 # calculate ratios of 
 enrichment_data <- esat_counts %>%
-	calculateEnrichment(conditions = c('IgG', 'IP'), against = 'input')
+	calculateEnrichment(conditions = c('igg', 'ip'))
 ```
 
 ```{r create_big_enrichment_table, echo = F}
@@ -424,14 +452,14 @@ big_table <- big_table %>%
 				   spread(sample, tpm, fill = 0),
 			   by = 'gene_name')
 
-write_excel_csv(big_table, paste0(wd, 'data/expression_table.csv'))
+write_excel_csv(big_table, paste0(michela_m6a_root, 'data/expression_table.csv'))
 ```
 
-Next we checked if we indeed get an enrichment in IP/input, versus IgG/input.
-This is the case, if we look at the distribution of median enrichment IP/input vs IgG/input: we get more values enriched in the IP/input, and the distribution has a higher mean.
+Next we checked if we indeed get an enrichment in ip/input, versus igg/input.
+This is the case, if we look at the distribution of median enrichment ip/input vs igg/input: we get more values enriched in the ip/input, and the distribution has a higher mean.
 
 ```{r calculate_enrichment_medians, echo = F}
-# calculate the median enrichment for both IP/input and IgG/input
+# calculate the median enrichment for both ip/input and igg/input
 enrichment_medians <- enrichment_data %>%
 	mutate(condition = pull_down_condition) %>%
 	group_by(gene_name, condition) %>%
@@ -448,30 +476,30 @@ mu <- enrichment_medians %>%
 
 # visualise enrichment, plotting also the means
 enrichment_medians %>%
-	mutate(condition = factor(condition, levels = c('IgG', 'input', 'IP'))) %>%	
+	mutate(condition = factor(condition, levels = c('igg', 'input', 'ip'))) %>%	
 	ggplot(aes(median_enrichment, color = condition, fill = condition)) +
 		geom_density(alpha = 0.3) +
 		geom_vline(data = mu, aes(xintercept = grp.mean, color = condition), size = 1, linetype='dashed') +
 		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
 		scale_color_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
 		scale_x_continuous(breaks = 0:5, limits = c(0, 5.5)) +
-		ggtitle('Median enrichment of IP and IgG versus input')
+		ggtitle('Median enrichment of ip and igg versus input')
 ```
 
 ```{r plot_density_of_enrichment_points, echo = F, eval = F}
 enrichment_medians %>%
 	spread(condition, median_enrichment) %>%
-	ggplot(aes(IP, IgG)) +
+	ggplot(aes(ip, igg)) +
 		geom_point()
 ```
 
-#### Enrichment between downsampled and normal IP's
+#### Enrichment between downsampled and normal ip's
 
 ```{r compare_enrichment_downsampled_normal, echo = F}
 # combine dowsnapled enrichment with normal enrichment. 
-# basically this means that the tpm_enrichment will change for IP_3
+# basically this means that the tpm_enrichment will change for ip_3
 enrichment_comparison_data <- downsampled_counts %>%
-	calculateEnrichment(conditions = c('IgG', 'IP'), against = 'input') %>%
+	calculateEnrichment(conditions = c('igg', 'ip')) %>%
 	# select only key columns and tpm
 	dplyr::select(replicate, gene_name, pull_down_condition, tpm_enrichment) %>%
 	inner_join(enrichment_data %>% dplyr::select(-pull_down_tpm),
@@ -484,9 +512,9 @@ enrichment_comparison_data <- downsampled_counts %>%
 
 ```{r plot_enrichment_difference_density, echo = F}
 # plot the enrichment comparison as a density function to get distribution differences
-# IP 1 and 2 should stay the same, while IP 3 distribution might slightly change
+# ip 1 and 2 should stay the same, while ip 3 distribution might slightly change
 enrichment_comparison_data %>%
-	filter(pull_down_condition == 'IP') %>%
+	filter(pull_down_condition == 'ip') %>%
 	gather('enrichment_type', 'tpm_enrichment', tpm_enrichment.normal, tpm_enrichment.ds) %>%
 	mutate(enrichment_type = factor(enrichment_type),
 		   enrichment_type = mapvalues(enrichment_type, from = c('tpm_enrichment.normal', 'tpm_enrichment.ds'), to = c('normal', 'ds')),
@@ -497,27 +525,27 @@ enrichment_comparison_data %>%
 		geom_density(alpha = 0.5) +
 		facet_wrap(~enrichment_type, labeller = labeller(enrichment_type = c('ds' = 'Downsampled counts', 'normal' = 'Raw counts'))) +
 		xlab('log10(tpm_enrichment)') +
-		ggtitle('Enrichment of IP vs input', 'Enrichment of IP/input for all 3 replicates')
+		ggtitle('Enrichment of ip vs input', 'Enrichment of ip/input for all 3 replicates')
 ```
 
 #### Compare the ranks of the enrichment
 
-From the plot above it is clear that IP\_3 is a bit off, as compared to the other two replicates. In order to see if the distributions are similar, we first converted the TPM enrichment values (IP/input) into a rank table, then tested whether the ranks are similar between the conditions with a Kruskal-Wallis test.
+From the plot above it is clear that ip\_3 is a bit off, as compared to the other two replicates. In order to see if the distributions are similar, we first converted the TPM enrichment values (ip/input) into a rank table, then tested whether the ranks are similar between the conditions with a Kruskal-Wallis test.
 
 ```{r compute_enrichment_ranks, echo = F}
 enrichment_ranks <- enrichment_data %>%
-	# select only IP
-	filter(pull_down_condition == 'IP') %>%
+	# select only ip
+	filter(pull_down_condition == 'ip') %>%
 	# first filter the data according to input count and pull down tpm
 	filter(input_count > 4,  pull_down_tpm > 0.1) %>%
-	# prepend IP to each replicate
+	# prepend ip to each replicate
 	mutate(replicate = paste0(pull_down_condition, '_', replicate)) %>%
 	# drop some variables
 	dplyr::select(-pull_down_tpm, -input, -input_count) %>%
 	# spread the tpm enrichment values so that we can filter each which is non finite
 	spread(replicate, tpm_enrichment) %>%
-	filter(is.finite(IP_1), is.finite(IP_2), is.finite(IP_3)) %>%
-	gather('replicate', 'tpm', IP_1:IP_3) %>%
+	filter(is.finite(ip_1), is.finite(ip_2), is.finite(ip_3)) %>%
+	gather('replicate', 'tpm', ip_1:ip_3) %>%
 	group_by(replicate) %>%
 	# calculate rank: this will be in the opposite order, with rank 1 being the smallest enrichment
 	mutate(rank = min_rank(tpm)) %>%
@@ -540,13 +568,13 @@ get_wilcox_res <- function(data, x, y){
 
 test_res <- enrichment_ranks %>% {
 		rbind(
-		  get_wilcox_res(., 'IP_1', 'IP_2'),
-		  get_wilcox_res(., 'IP_1', 'IP_3'),
-		  get_wilcox_res(., 'IP_3', 'IP_2')
+		  get_wilcox_res(., 'ip_1', 'ip_2'),
+		  get_wilcox_res(., 'ip_1', 'ip_3'),
+		  get_wilcox_res(., 'ip_3', 'ip_2')
 		)
 	}
 
-test_res$data.name = c('IP_1 vs IP_2', 'IP_1 vs IP_3', 'IP_3 vs IP_2')
+test_res$data.name = c('ip_1 vs ip_2', 'ip_1 vs ip_3', 'ip_3 vs ip_2')
 
 kable(test_res)
 ```
@@ -555,18 +583,18 @@ kable(test_res)
 
 To identify consistently enriched we first filtered the genes as follows:
 
-- The have at least a TPM of 0.1 in all 3 IP's
-- They are enriched in all three IP/input comparisons at least 2-fold
+- The have at least a TPM of 0.1 in all 3 ip's
+- They are enriched in all three ip/input comparisons at least 2-fold
 
 ```{r identify_enriched_candidates, echo = F}
 filtered_data <- enrichment_data %>%
-	# filter out IP with tpm <= 0.1
-	filter(pull_down_tpm > 0.1 | pull_down_condition == 'IgG') %>%
+	# filter out ip with tpm <= 0.1
+	filter(pull_down_tpm > 0.1 | pull_down_condition == 'igg') %>%
 	# filter genes which have low counts in the input
 	filter(input_count > 4) %>%
 	# filter NaN, NA, and Inf values
 	filter(is.finite(tpm_enrichment)) %>%
-	# group by the gene and condition, ie IP or IgG
+	# group by the gene and condition, ie ip or igg
 	group_by(gene_name, pull_down_condition) %>%
 	summarise(mean_ip_tpm = mean(pull_down_tpm),
 			  median_enrichment = median(tpm_enrichment),
@@ -578,25 +606,25 @@ filtered_data <- enrichment_data %>%
 filter_ip <- list(mean_tpm = 10,
 				  median_enrichment = 3)
 
-# get the significant candidates in IP, that is those which are expressed at least TPM > 0.1 in each IP replicate
+# get the significant candidates in ip, that is those which are expressed at least TPM > 0.1 in each ip replicate
 candidates_ip <- filtered_data %>%
-	filter(passing_filter == 3, pull_down_condition == 'IP') %>%
+	filter(passing_filter == 3, pull_down_condition == 'ip') %>%
 	mutate(sig = mean_ip_tpm > filter_ip$mean_tpm & median_enrichment > filter_ip$median_enrichment)
 ```
 
-Below we plot the median TPM enrichment of all 3 IP/input values, against the average IP TPM on a log10-scale.
+Below we plot the median TPM enrichment of all 3 ip/input values, against the average ip TPM on a log10-scale.
 All values presented here are from after filtering.
 
 Values for which the mean TPM is bigger than `r filter_ip$mean_tpm` and they are at least `r filter_ip$median_enrichment`-fold enriched (in the median) are marked in red.
 
 In total there are `r nrow(filter(candidates_ip, sig ==F))` which pass this filter.
 
-```{r plot_candidate_tpm_vs_enrichment, echo = F}
-ip_candidate_plot <- function(candidate_df, filters, plot_title = ''){
-	gene.n <- candidate_df %>% nrow
-	sig.n <- candidate_df %>% filter(sig == T) %>% nrow
+```{r plot_m6a_candidatetpm_vs_enrichment, echo = F}
+ip_m6a_candidate_plot <- function(m6a_candidate_df, filters, plot_title = ''){
+	gene.n <- m6a_candidate_df %>% nrow
+	sig.n <- m6a_candidate_df %>% filter(sig == T) %>% nrow
 
-	candidate_df %>%
+	m6a_candidate_df %>%
 		ggplot(aes(mean_ip_tpm, median_enrichment)) +
 			# first add lines to show what we color red
 			# vertical line
@@ -617,52 +645,52 @@ ip_candidate_plot <- function(candidate_df, filters, plot_title = ''){
 			scale_x_log10(breaks = c(1,10,100,1000,10000)) +
 			scale_color_manual(values = c('black', 'red')) +
 			annotation_logticks(sides = 'b') +
-			labs(y = 'Median TPM enrichment of m6A/input', x = 'Mean of IP TPM\'s') +
+			labs(y = 'Median TPM enrichment of m6A/input', x = 'Mean of ip TPM\'s') +
 			theme(legend.position = 'none') +
 			ggtitle(plot_title) 
 }
 
 candidates_ip %>%
-	ip_candidate_plot(plot_title = 'Enriched genes IP/input', filters = filter_ip)
+	ip_m6a_candidate_plot(plot_title = 'Enriched genes ip/input', filters = filter_ip)
 ```
 
 In total there are `r nrow(filter(candidates_ip, sig == T))`/`r nrow(filter(candidates_ip, sig ==F))` genes which have mean TPM of at least 10, and average enrichment of at least 4.
 
-#### Remove the background coming from IgG pull-down
+#### Remove the background coming from igg pull-down
 
-```{r candidate_igg_background_removal, echo = F}
-# define candidate differences: between IP and IgG
+```{r m6a_candidate_igg_background_removal, echo = F}
+# define candidate differences: between ip and igg
 enrichment_diff <- filtered_data %>%
 	ungroup() %>%
 	# only get genes which pass the filter, set above 
-	filter(passing_filter == 3 | pull_down_condition == 'IgG') %>%
+	filter(passing_filter == 3 | pull_down_condition == 'igg') %>%
 	transmute(gene_name = gene_name,
 			  condition = pull_down_condition,
-			  # select the highest IgG enrichment vs lowest IP
-			  selected_enrichment = ifelse(condition == 'IP', median_enrichment, median_enrichment)) %>%
+			  # select the highest igg enrichment vs lowest ip
+			  selected_enrichment = ifelse(condition == 'ip', median_enrichment, median_enrichment)) %>%
 	# spread enrichment ratios
 	spread(condition, selected_enrichment) %>%
-	# calculate the difference between IP and IgG
-	mutate(enrichment_diff = IP - IgG) %>%
-	dplyr::rename(median_IP_enrichment = IP,
-				  median_IgG_enrichment = IgG) %>%
+	# calculate the difference between ip and igg
+	mutate(enrichment_diff = ip - igg) %>%
+	dplyr::rename(median_ip_enrichment = ip,
+				  median_igg_enrichment = igg) %>%
 	filter(is.finite(enrichment_diff))
 ```
 
-```{r plot_candidate_tpm_vs_enrichment_diff_igg, echo = F}
-# we plot the same plot as above, but this time only using the genes for which there is a difference between IP and IgG enrichment
+```{r plot_m6a_candidate_tpm_vs_enrichment_diff_igg, echo = F}
+# we plot the same plot as above, but this time only using the genes for which there is a difference between ip and igg enrichment
 candidates_ip_diff <- candidates_ip %>%
-	# show only candidates, for which IP enrichment is bigger than 0
+	# show only candidates, for which ip enrichment is bigger than 0
 	filter(gene_name %in% (enrichment_diff %>% filter(enrichment_diff > 2) %$% gene_name))
 
 candidates_ip_diff %>%
-	ip_candidate_plot(plot_title = 'Enriched genes IP/input without IgG background', filters = filter_ip)
+	ip_m6a_candidate_plot(plot_title = 'Enriched genes ip/input without igg background', filters = filter_ip)
 ```
 
 Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(filter(candidates_ip_diff, sig ==F))` genes which have mean TPM of at least 10, and average enrichment of at least 4.
 
 
-#### Comparing enrichment IP vs IgG
+#### Comparing enrichment ip vs igg
 
 ```{r plot_igg_vs_ip_enrichment, echo = F}
 pl_in <- enrichment_diff %>%
@@ -670,15 +698,15 @@ pl_in <- enrichment_diff %>%
 	mutate(sig = log2FoldChange > 1 & padj < 0.05)
 
 pl_in %>%
-	ggplot(aes(median_IP_enrichment, median_IgG_enrichment, color = sig)) +
+	ggplot(aes(median_ip_enrichment, median_igg_enrichment, color = sig)) +
 		geom_point(size = 0.7, alpha = 0.5) +
 		scale_y_continuous(breaks = 0:10, limits = c(0,10)) +
 		scale_x_continuous(breaks = 0:10, limits = c(0,10)) +
 		scale_color_manual(values = c('black', 'red')) +
 		coord_fixed() +
 		theme(legend.position = 'none') +
-		labs(x = 'median(m6A/input)', y = 'median(IgG/input)') +
-		ggtitle('IP vs IgG enrichment', 'IP vs input enriched genes in red')
+		labs(x = 'median(m6A/input)', y = 'median(igg/input)') +
+		ggtitle('ip vs igg enrichment', 'ip vs input enriched genes in red')
 ```
 
 
@@ -686,8 +714,8 @@ pl_in %>%
 library(BSgenome)
 library(GenomicFeatures)
 
-txdb <- makeTxDbFromGFF(paste0(wd, '../../shared/annotations/dm6.gtf'))
-dm6_genome <- readDNAStringSet(paste0(wd, '../../shared/genomes/dm6.fa')) 
+txdb <- makeTxDbFromGFF(paste0(root_dir, 'shared/annotations/dm6.gtf'))
+dm6_genome <- readDNAStringSet(paste0(root_dir, 'shared/genomes/dm6.fa')) 
 
 # rename the chr names, as in the original dm6.fasta they have have some stuff appended after 2L, etc
 names(dm6_genome) <- names(dm6_genome) %>%
@@ -731,40 +759,58 @@ DNAStringSet
 big_table_enrichment_diff <- enrichment_diff %>%
 	inner_join(big_table, by = 'gene_name') %>%
 	dplyr::rename(median_enrichment_diff = enrichment_diff) %>%
-	arrange(desc(median_enrichment_diff)) %>%
 	inner_join(ip_vs_input.resLFC %>%
 			   	dplyr::select(gene_name, padj, log2FoldChange), by = 'gene_name') %>%
 	dplyr::rename(p_value = padj)
 
-candidate_table <- big_table_enrichment_diff %>%
+m6a_candidate_table <- big_table_enrichment_diff %>%
 	filter(median_enrichment_diff > 2, log2FoldChange > 1, p_value < 0.05) %>%
 	dplyr::select(-log2FoldChange)
 
-candidate_table %>%
-	write_excel_csv(paste0(wd, 'data/candidate_expression.csv'))
+m6a_candidate_median_ip_tpm <- m6a_candidate_table %>%
+	dplyr::select(gene_name, ip_1_tpm:ip_3_tpm) %>%
+	gather('obs', 'value', -gene_name) %>%
+	group_by(gene_name) %>%
+	summarise(median_ip_tpm = median(value))
+
+m6a_candidate_table <- m6a_candidate_median_ip_tpm %>%
+	inner_join(m6a_candidate_table, by='gene_name')
+
+m6a_candidate_table %>%
+	arrange(desc(median_ip_tpm)) %>%
+	write_excel_csv(paste0(michela_m6a_root, 'data/candidates/m6a_candidate_expression.csv'))
 ```
 
-```{r save_sequences, echo = F}
-candidate_ids <- genes %>%
-	filter(gene_name %in% candidate_table$gene_name) %$%
+```{r get_m6a_candidate_sequences, echo = F}
+m6a_candidate_ids <- genes %>%
+	filter(gene_name %in% m6a_candidate_table$gene_name) %$%
 	gene_id
 
-rest_ids <- genes %>%
-	filter(!(gene_name %in% candidate_table$gene_name)) %>%
-	filter(gene_biotype == 'protein_coding', gene_id %in% names(gene_sequences)) %$%
+# select rest of genes depending on their tpm in the input 
+rest_ids <- enrichment_data %>%
+	# select sequences which are not candidates
+	filter(!(gene_name %in% m6a_candidate_table$gene_name),
+		   gene_id %in% names(gene_sequences),
+		   pull_down_condition == 'ip') %>%
+	# filter by expression and enrichment
+	filter(input > 0.5, tpm_enrichment < 1) %>%
+	group_by(gene_id) %>%
+	summarise(passing_filter = n()) %>%
+	# select only which pass the filter for all three replicates
+	filter(passing_filter == 3) %$%
 	gene_id
 
-# get esat counts, and filter only the IP's, and get the median of those
+# get esat counts, and filter only the ip's, and get the median of those
 # counts_for_fasta <- esat_counts %>%
-# 	filter(condition == 'IP') %>%
+# 	filter(condition == 'ip') %>%
 # 	group_by(gene_id) %>%
 # 	summarise(tpm = median(tpm))
 
 # flag candidates, join original gene tibble together, to account for dropouts
 # counts_for_fasta <- genes %>%
 # 	# flag the candidates in the original gene table
-# 	mutate(is_candidate = gene_name %in% candidate_gene_names) %>%
-# 	# join the median tpm counts for IP
+# 	mutate(is_candidate = gene_name %in% m6a_candidate_gene_names) %>%
+# 	# join the median tpm counts for ip
 # 	left_join(counts_for_fasta, by = 'gene_id') %>%
 # 	# create names for the fasta output, which contain tpm-s attached to the gene name
 # 	mutate(tpm = ifelse(is.na(tpm), 0, tpm),
@@ -773,48 +819,123 @@ rest_ids <- genes %>%
 # 	filter(gene_id %in% names(gene_sequences))
 
 # we don't need this, as we compare candidates to rest...
-candidate_seq <- gene_sequences[candidate_ids]
+m6a_candidate_seq <- gene_sequences[m6a_candidate_ids]
 
 rest_seq <- gene_sequences[rest_ids]
 
-writeXStringSet(candidate_seq,
-				paste0(wd, 'data/candidates/candidates.fa'))
+get_windowed_sequences <- function(seqs, q_seq_len, w_size){
+	w_min <- q_seq_len - w_size
+	w_max <- q_seq_len + w_size
+	seqs[width(seqs) > w_min & width(seqs) < w_max]
+}
+
+# get control sequences which are comparable to candidates in size
+get_control_seq <- function(m6a_candidate_seq, rest_seq, sample_size_mult){
+	m6a_candidate_seq %>%
+		llply(function(sq){
+			len <- length(sq)
+			
+			window_size <- 10
+			windowed_seqs <- get_windowed_sequences(rest_seq, len, window_size)
+
+			while(length(windowed_seqs) < sample_size_mult *2){
+				window_size <- window_size * 10
+				windowed_seqs <- get_windowed_sequences(rest_seq, len, window_size)
+			}
+
+			out_seq <- windowed_seqs %>%
+				sample(sample_size_mult)
+			
+			out_seq
+		}) %>%
+		unname() %>%
+		do.call(c, .) %>%
+		unique
+}
+
+# select control genes, one per candidate, with rouglhy the same length, by random
+control_seq <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 1)
+control_seq_2 <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 2)
+```
+
+```{r save_sequences, echo = F}
+writeXStringSet(m6a_candidate_seq,
+				paste0(michela_m6a_root, 'data/candidates/candidates.fa'))
+
+writeXStringSet(control_seq,
+				paste0(michela_m6a_root, 'data/candidates/control_seqs.fa'))
+
+writeXStringSet(control_seq,
+				paste0(michela_m6a_root, 'data/candidates/control_seqs_2.fa'))
 
 writeXStringSet(rest_seq,
-				paste0(wd, 'data/candidates/control_seqs.fa'))
+				paste0(michela_m6a_root, 'data/candidates/rest_seqs.fa'))
 ```
 
-### Differential expression: building a DESeq2 model
+### Look at circles in polyA data
 
-First we build a DEseq model on the data for IP vs input and IP vs IgG. We build a paired model using the formula  `~ replicate + condition` to account for variability between replicates.
+```{r load_find_circ_data, echo = F, include = F}
+txdb <- makeTxDbFromGFF(paste0(root_dir, 'shared/annotations/dm6.gtf'))
+annot.file = paste0(root_dir, "shared/annotations/dm6.sqlite")
 
-```{r prepare_deseq, echo = F}
-m6a_dds <- DESeq(m6a_dds)
+saveDb(txdb, file = annot.file)
 
-ip_vs_input.res <- results(m6a_dds,name = 'condition_IP_vs_input', alpha = 0.01)
-ip_vs_input.resLFC <- lfcShrink(m6a_dds, res = ip_vs_input.res, coef = 'condition_IP_vs_input', type = 'apeglm') %>%
-	as.data.frame %>%
-	rownames_to_column(var = 'gene_name') %>%
-	as_tibble
+annot.list = loadAnnotation(annot.file)
+
+data.path = paste0(michela_m6a_root, 'data/mapping/circrna/')
+
+circ_experiment_paths = llply(samples,function(x){
+  paste0(data.path, '/', x, '/find_circ_run/circ_splice_sites.bed')
+})
+
+cdata = data.frame(sample = samples, filename = circ_experiment_paths %>% unlist)
+
+### workaround as SummarizedExperiment currently gives some weird error. This trick does it
+rownames(cdata) <- cdata$sample
+
+### put the circs in a SummarizedExperiment object
+circs.se <- summarizeCircs(cdata, keepCols = 1:12)
+
+### annotate circs
+circs.se <- annotateCircs(circs.se, annot.list = annot.list) %>% circLinRatio
 ```
 
-```{r plot_volcano_plot, echo = F}
-ip_vs_input.resLFC %>%
-	filter(!is.na(padj)) %>%
-	mutate(sig = ifelse(log2FoldChange > log2(3) & padj < 0.01, T, F)) %>%
-	ggplot(aes(log2FoldChange, -log10(padj))) +
-		geom_point(aes(color = sig), alpha = 0.7, size = 0.8) + 
-		xlim(-3.5, 3.5) +
-		scale_color_manual(values = c('black', 'red')) +
-		ggtitle('Several genes highly enriched IP vs input',
-				'Genes with LFC > 3 and adjusted p < 0.01 colored in red') +
-		theme(legend.position = 'none')
+```{r get_detected_circrnas, echo = F}
+### save circs quantification in a tibble instead of results table
+circs_tb <- circs.se %>% resTable %>% as.tibble
+
+circs_tb <- circs_tb %>%
+	gather('observation', 'value', ip_1_circ:input_3_ratio) %>%
+	separate(observation, into = c('condition', 'replicate', 'observation'), sep= '[_]') %>%
+	inner_join(genes %>% dplyr::select(gene_name, gene_id), by = 'gene_id')
+
+circs_counts <- circs_tb %>%
+	filter(width > 50, observation == 'circ') %>%
+	group_by(condition, replicate, gene_name, gene_id) %>%
+	summarise(value = sum(value))	
+
+circs_abundances <- circs_counts %>%
+	group_by(condition, replicate) %>%
+	mutate(value = value / sum(value) * 1e2)
+
+# show circles
+to_join_1 <- circs_counts %>%
+	unite('sample', condition, replicate) %>%
+	spread(sample, value)
+	
+to_join_2 <- circs_abundances %>%
+	unite('sample', condition, replicate) %>%
+	spread(sample, value)
+
+polya_circs_table <- inner_join(to_join_1, to_join_2, by = c('gene_id', 'gene_name'), suffix = c('.count', '.norm_abundance'))
+
+write_excel_csv(polya_circs_table, paste0(michela_m6a_root, 'data/candidates/polya_circs_table.csv'))
 ```
 
 ## Uniting with data from RFP (Nagarjuna 2017)
 
 ```{r read_fc_output, echo = F}
-rfp_fc <- readRDS(paste0(wd, '../../nagarjuna/rfp/data/counts/feature_counts.rds'))
+rfp_fc <- readRDS(paste0(root_dir, 'nagarjuna/rfp/data/counts/feature_counts.rds'))
 
 colnames(rfp_fc$counts) <- c('ld_1', 'ld_2', 'hd_1', 'hd_2')
 
@@ -832,10 +953,10 @@ n <- rfp_counts %>%
 	gene_id
 
 # we can get these names and convert them to their current symbols using: https://flybase.org/convert/id
-# the output is saved to ../../data/FlyBase_IDs.txt
+# the output is saved to FlyBase_IDs.txt
 
 # get only ones which really changed
-convert_ids <- read_table2(paste0(wd, 'data/FlyBase_IDs.txt')) %>%
+convert_ids <- read_table2('../../../../FlyBase_IDs.txt')%>%
 	filter(submitted_id != current_id) %>%
 	dplyr::rename(gene_id = submitted_id) %>%
 	dplyr::select(gene_id, converted_id)
@@ -850,7 +971,7 @@ rfp_counts <- rfp_counts %>%
 # use inner join as all the id should be updated by now
 rfp_counts <- rfp_counts %>%
 	inner_join(genes, by = 'gene_id') %>%
-	filter(!(gene_biotype %in% c('rRNA', 'tRNA', 'snRNA', 'snoRNA')))
+	filter(gene_biotype == 'protein_coding')
 ```
 
 ```{r calculate_fc_tpm, echo = F}
@@ -905,7 +1026,25 @@ rfp_tpm_ranked %>%
 		scale_y_log10()
 ```
 
-```{r plot_enriched_genes_tpm_density, echo =F}
+```{r get_enriched_go_terms, echo = F}
+m6a_go <- esat_counts %>%
+	filter(condition == 'input',
+		   count > 4) %>%
+	group_by(gene_id) %>%
+	summarise(passing_filter = n()) %>%
+	filter(passing_filter == 3) %$%
+	gene_id %>%
+	getGOData(genes_of_interest = m6a_candidate_ids,
+			  control_genes = .,
+			  gene_id2go = gene_id2go)
+
+m6a_go_res <- m6a_go %>%
+	runTest(algorithm='classic', statistic='fisher') %>%
+	GenTable(m6a_go, classicFisher =.)
+```
+
+
+```{r plot_enriched_genes_tpm_density, echo = F, eval = F}
 rfp_tpm_ranked %>%
 	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
 	separate('experiment', into = c('condition', 'replicate')) %>%
@@ -914,17 +1053,9 @@ rfp_tpm_ranked %>%
 	ggplot(aes(log_tpm, fill = condition)) +
 		geom_density(alpha = 0.7)+
 		scale_fill_manual(values=wes_palette(n=2, name="Darjeeling1"))
-
-
-rfp_tpm_ranked %>%
-	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
-	separate('experiment', into = c('condition', 'replicate')) %>%
-	filter(condition == 'hd', tpm > 100) %$%
-	gene_biotype %>%
-	table
 ```
 
-```{r plot_ld_vs_hd_tpm, echo = F}
+```{r plot_ld_vs_hd_tpm, echo = F, eval = F}
 rfp_tpm_ranked %>%
 	filter(gene_id %in% sig_genes_up) %>%
 	mutate(ld = log10((ld_1 + ld_2) / 2),
@@ -943,7 +1074,74 @@ resLFC %>%
 		geom_point(alpha = 0.5, size = 1)
 ```
 
----
+## Translation efficiency
+
+```{r download_cds_lengths, echo = F}
+cds_lengths <- ensembl %>%
+	getBM(
+		  attributes = c('ensembl_gene_id',
+						 'ensembl_transcript_id',
+						 'cds_length'),
+		  mart = .) %>%
+	as_tibble %>%
+	dplyr::rename(gene_id = ensembl_gene_id) %>%
+	group_by(gene_id) %>%
+	summarise(cds_length = max(cds_length))
+```
+
+```{r estimate_translational_efficiency, echo = F}
+input_abundances <- esat_counts %>%
+	dplyr::select(-tpm, -gene_start, -gene_end, -gene_biotype, -gene_start, -gene_length, -strand) %>%
+	filter(condition == 'input') %>%
+	inner_join(cds_lengths, by = 'gene_id') %>%
+	group_by(replicate) %>%
+	mutate(norm_count = count / sum(count) * 1e6) %>%
+	group_by(gene_id, gene_name) %>%
+	summarise(mnc = mean(norm_count))
+
+rfp_abundances <- rfp_counts %>%
+	dplyr::select(gene_id:hd_2) %>% 
+	gather('experiment', 'count', ld_1:hd_2) %>%
+	separate(experiment, into = c('condition', 'replicate')) %>%
+	inner_join(cds_lengths, by = 'gene_id') %>%
+	group_by(condition, replicate) %>%
+	mutate(norm_count = count / cds_length,
+		   norm_count = norm_count / sum(norm_count) * 1e6) %>%
+	group_by(gene_id, condition) %>%
+	summarise(mnc = mean(norm_count))
+
+abundances <- input_abundances %>%
+	inner_join(rfp_abundances, by = 'gene_id', suffix = c('.input', '.rfp')) %>%
+	mutate(translation_efficiency = mnc.rfp / mnc.input,
+		   seq_type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', 'not candidate'))
+```
+
+```{r plot_translational_efficiency_density, echo = F}
+abundances %>%
+	ggplot(aes(translation_efficiency, fill = seq_type)) +
+		geom_density(alpha = 0.5) +
+		scale_x_log10() +
+		facet_wrap(~condition)
+```
+
+```{r plot_translational_efficiency_ld_vs_hd, echo = F}
+abundances %>%
+	dplyr::select(gene_id, condition, translation_efficiency, seq_type) %>%
+	mutate(log_te = log10(translation_efficiency)) %>%
+	dplyr::select(-translation_efficiency) %>%
+	spread(condition, log_te) %>%
+	ggplot(aes(ld, hd)) +
+		geom_vline(xintercept = 0, color = 'red', linetype = 'dashed') +
+		geom_smooth(method = 'lm') +
+		geom_point(alpha = 0.7, size = 0.1) +
+		scale_x_continuous(breaks = c(-4, -2, 0, 2), limits = c(-5, 3)) +
+		scale_y_continuous(breaks = c(-4, -2, 0, 2), limits = c(-5, 3)) +
+		coord_fixed() +
+		facet_wrap(~seq_type)
+```
+
+
+-
 # Kallisto
 
 Second, we also calculated the transcript counts with using kallisto (ref needed). This, instead of mapping the reads creates pseudo-counts with building a probabilistic model.
@@ -953,7 +1151,7 @@ Second, we also calculated the transcript counts with using kallisto (ref needed
 ####
 # import kallisto using read_table2
 ####
-kallisto_dir = paste0(wd, 'data/kallisto_quant/')
+kallisto_dir = paste0(michela_m6a_root, 'data/kallisto_quant/')
 
 kallisto_data <- samples %>% ldply(function(smpl){
 		df <- read_table2(paste0(kallisto_dir, '/', smpl, '/abundance.tsv'))
@@ -981,7 +1179,7 @@ kallisto_metadata <- tibble(sample = samples) %>%
 	# remove randomly generated suffix
 	dplyr::select(-rnd) %>%
 	mutate(path = paste0(kallisto_dir, sample),
-		   condition = factor(condition, levels = c('input', 'IgG', 'IP'))) %>%
+		   condition = factor(condition, levels = c('input', 'igg', 'ip'))) %>%
 	# sort tibble by factor
 	arrange(condition)
 

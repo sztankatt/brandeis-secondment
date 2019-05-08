@@ -1,4 +1,4 @@
-calculateEnrichment <- function(data, conditions, against = 'input'){
+calculateEnrichment <- function(data, conditions){
 # calculate ratios of enrichment of conditions against a given ccondition , default = input
 	enrichment_data <- data %>%
 		dplyr::select(condition, replicate, gene_id, gene_name, tpm) %>%
