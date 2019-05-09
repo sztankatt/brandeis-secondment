@@ -1,0 +1,61 @@
+# yaml config file for the whole project tree. 
+# by tsztank
+
+raw_data:
+    michela:
+        m6a:
+            samples:
+                ip_1: m6A_IP_1_S26_R2_001.fastq.gz
+                ip_2: m6A_IP_2_S29_R2_001.fastq.gz
+                ip_3: m6A_IP_3_S32_R2_001.fastq.gz
+                igg_1: m6A_IgG_1_S27_R2_001.fastq.gz
+                igg_2: m6A_IgG_2_S30_R2_001.fastq.gz
+                igg_3: m6A_IgG_3_S33_R2_001.fastq.gz
+                input_1: m6A_input_1_S25_R2_001.fastq.gz
+                input_2: m6A_input_2_S28_R2_001.fastq.gz
+                input_3: m6A_input_3_S31_R2_001.fastq.gz
+            reads_dir: /data/local/rajewsky/projects/kadener_collab/brandeis_secondment/raw_data/m6a/
+            lib_type: star
+    nagarjuna:
+        rfp:
+            samples:
+                ld_1: SRR3297802.fastq.gz
+                ld_2: SRR3297803.fastq.gz
+                hd_1: SRR3297804.fastq.gz
+                hd_2: SRR3297805.fastq.gz
+            reads_dir: /data/rajewsky/projects/kadener_collab/brandeis_secondment/raw_data/rfp/
+            lib_type: rfp
+    mor_osnat:
+        synaptosomes:
+            samples:
+                homog_1: Homog_1_S1_R1_001.fastq.gz
+                homog_2: Homog_2_S6_R1_001.fastq.gz
+                pel1_1: Pel1_1_S3_R1_001.fastq.gz
+                pel1_2: Pel1_2_S8_R1_001.fastq.gz
+                pel2_1: Pel2synap_1_S5_R1_001.fastq.gz
+                pel2_2: Pel2synap_2_S10_R1_001.fastq.gz
+                sup1_1: Sup1_1_S2_R1_001.fastq.gz
+                sup1_2: Sup1_2_S7_R1_001.fastq.gz
+                sup2_1: Sup2_1_S4_R1_001.fastq.gz
+                sup2_2: Sup2_2_S9_R1_001.fastq.gz
+            reads_dir: /data/rajewsky/projects/kadener_collab/brandeis_secondment/raw_data/synaptosomes/fastq/
+            lib_type: star
+
+knowledge:
+    transcriptomes:
+        dm6: /data/rajewsky/annotation/dm6/tophat_tx_index/ensGene.proper.fa
+    annotations:
+        dm6: /data/rajewsky/annotation/dm6/latest/ensGene.proper.gtf
+    genomes:
+        dm6: /data/rajewsky/genomes/dm6/dm6.fa
+    indices:
+        dm6:
+            star: /data/rajewsky/indices/dm6_star_2.7.0/
+            bt2_rRNA: /data/rajewsky/indices/dm6_rRNA_bowtie2_2.1.0/bt2_dm_rRNA
+            bt1: /data/rajewsky/indices/dm6_bowtie_1.1.1/dm6.fa
+            bt2_rRNA_plus: /data/rajewsky/indices/dm6_rRNA_plus_bowtie2_2.3.5/dm6_rRNA_plus
+    adaptors:
+        illumina: shared/illumina_adaptors.fa
+scripts:
+    fc2: /home/tsztank/repos/find_circ2/find_circ.py 
+    esat_command: java -jar /home/tsztank/repos/ESAT/dist/esat.v0.1_05.03.19_22.13.jar
