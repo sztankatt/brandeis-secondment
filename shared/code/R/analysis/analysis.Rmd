@@ -993,31 +993,37 @@ m6a_motif_count %>%
 
 ```{r plot_genes_with_3p_motif, echo = F, fig.width = 10, fig.height = 8}
 # get genes which are only int the 3p
-m6a_motif_count %>% 
+m6a_3p_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((cds < 10& fivep < 10 & threep - 10 > cds & threep - 10 > fivep) |
 		   ( threep/cds > 3 & threep/fivep > 3)) %$%
-	gene_name %>%
+	gene_name
+
+m6a_3p_candidates %>%
 	coverage_plot(all_coverage, .) +
 		ggtitle('Genes with most motifs in 3\' UTR')
 ```
 
 ```{r plot_genes_with_5p_motif, echo = F, fig.width = 10, fig.height = 6}
-m6a_motif_count %>% 
+m6a_5p_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((cds < 10 & threep < 10 & fivep - 10 > cds & fivep - 10 > threep) |
 		   (fivep/cds > 3 & fivep/threep > 3)) %$%
-	gene_name %>%
+	gene_name
+
+m6a_5p_candidates %>%
 	coverage_plot(all_coverage, .) +
 		ggtitle('Genes with most motifs in 5\' UTR')
 ```
 
 ```{r plot_genes_with_cds_motif, echo = F, fig.width = 10, fig.height = 6}
-m6a_motif_count %>% 
+m6a_cds_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((fivep < 10 & threep < 10 & cds > 10)|
 		   (cds/fivep > 3 & cds/threep > 3)) %$%
-	gene_name %>%
+	gene_name
+
+m6a_cds_candidates %>%
 	coverage_plot(all_coverage, .) +
 		ggtitle('Genes with most motifs in CDS')
 ```
@@ -1236,6 +1242,7 @@ resLFC %>%
 
 ## Translation efficiency
 
+
 ```{r download_cds_lengths, echo = F}
 cds_lengths <- gene_features %>%
 	group_by(gene_id) %>%
@@ -1269,6 +1276,8 @@ abundances <- input_abundances %>%
 		   seq_type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', 'not candidate'))
 ```
 
+
+
 ```{r plot_translational_efficiency_density, echo = F}
 abundances %>%
 	ggplot(aes(translation_efficiency, fill = seq_type)) +
@@ -1291,6 +1300,36 @@ abundances %>%
 		scale_y_continuous(breaks = c(-4, -2, 0, 2), limits = c(-5, 3)) +
 		coord_fixed() +
 		facet_wrap(~seq_type)
+```
+
+### Abundance of m6a candidates
+
+```{r plot_abundance_of_candidates, echo =F}
+abundances$m6a_type = 'not_methylated'
+
+abundances <- abundances %>%
+	mutate(m6a_type = ifelse(gene_id %in% m6a_candidate_ids, 'methylated', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_5p_candidates, '5p_methylated', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_3p_candidates, '3p_methylated', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_cds_candidates, 'cds_methylated', m6a_type)) %>%
+	filter(m6a_type != 'methylated')
+
+m6a_mu <- abundances %>%
+	group_by(m6a_type) %>%
+	summarise(grp.mean = mean(mnc.rfp))
+
+abundances %>%
+	ggplot(aes(mnc.rfp, color = m6a_type)) +
+		geom_density()+
+		scale_x_log10() +
+		facet_wrap(~m6a_type, ncol = 1) +
+		geom_vline(xintercept = m6a_mu %>% filter(m6a_type == 'not_methylated') %$% grp.mean,
+				   linetype = 'dashed', color = 'purple') +
+		geom_vline(data=m6a_mu, aes(xintercept=grp.mean, color=m6a_type),
+             linetype="dashed") +
+		ggtitle('RFP abundances of differently methylated genes')
+
+
 ```
 
 
