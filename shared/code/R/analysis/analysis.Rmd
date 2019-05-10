@@ -92,6 +92,27 @@ go_terms <- ensembl %>%
 
 gene_id2go <- go_terms %>%
 	dlply(.(gene_id), function(df){ df$go_id})
+
+gene_features <- ensembl %>%
+	getBM(
+		  attributes = c('ensembl_gene_id',
+						 'ensembl_transcript_id',
+						 'strand',
+						 'transcript_start',
+						 'transcript_end',
+						 '5_utr_start',
+						 '5_utr_end',
+						 '3_utr_start',
+						 '3_utr_end',
+						 'cds_length'),
+		  mart = .) %>%
+	as_tibble %>%
+	dplyr::rename(gene_id = ensembl_gene_id)
+
+colnames(gene_features) <- c('gene_id', 'tx_id','strand', 'tx_start', 'tx_end', 'fivep_start', 'fivep_end', 'threep_start', 'threep_end', 'cds_length')
+
+tx2gene <- txs %>%
+	dplyr::select(gene_name, gene_id, tx_id)
 ```
 
 ```{r load_sample_specification, echo = F}
@@ -731,27 +752,40 @@ gene_exons <- exonsBy(txdb, by = 'gene') %>%
 	# filter for only cannonical chromosomes
 	filter(seqnames %in% c('3R', '2R', '3L', '2L', 'X', 'Y', '4')) %>%
 	makeGRangesListFromDataFrame(split.field = 'group_name')
+
+tx_exons <- exonsBy(txdb, by ='tx', use.names = T) %>%
+	reduce() %>%
+	# get the data to tibble
+	as_tibble %>%
+	# filter for only cannonical chromosomes
+	filter(seqnames %in% c('3R', '2R', '3L', '2L', 'X', 'Y', '4')) %>%
+	makeGRangesListFromDataFrame(split.field = 'group_name')
 ```
 
 ```{r get_sequences, echo = F}
-gene_sequences <- llply(gene_exons, function(gene){
-	chr <- gene[1] %>% seqnames %>% as.character
-	strand <- gene[1] %>% strand %>% as.character
+get_sequences <- function(exon_list){
+	llply(exon_list, function(gene){
+		chr <- gene[1] %>% seqnames %>% as.character
+		strand <- gene[1] %>% strand %>% as.character
 
-	# get the sequences from a given chromosome, between the exon starts and ends
-	sequence <- extractAt(dm6_genome[[chr]], at = ranges(gene))
+		# get the sequences from a given chromosome, between the exon starts and ends
+		sequence <- extractAt(dm6_genome[[chr]], at = ranges(gene))
 
-	# join ranges together
-	sequence <- unlist(sequence)
+		# join ranges together
+		sequence <- unlist(sequence)
 
-	# if reverse strand, take the reverse complement
-	if(strand == '-'){
-		sequence <- reverseComplement(sequence)
-	}
+		# if reverse strand, take the reverse complement
+		if(strand == '-'){
+			sequence <- reverseComplement(sequence)
+		}
 
-	return(sequence)
-}) %>%
-DNAStringSet
+		return(sequence)
+	}) %>%
+	DNAStringSet
+}
+
+gene_sequences <- get_sequences(gene_exons)
+tx_sequences <- get_sequences(tx_exons)
 ```
 
 
@@ -800,26 +834,9 @@ rest_ids <- enrichment_data %>%
 	filter(passing_filter == 3) %$%
 	gene_id
 
-# get esat counts, and filter only the ip's, and get the median of those
-# counts_for_fasta <- esat_counts %>%
-# 	filter(condition == 'ip') %>%
-# 	group_by(gene_id) %>%
-# 	summarise(tpm = median(tpm))
-
-# flag candidates, join original gene tibble together, to account for dropouts
-# counts_for_fasta <- genes %>%
-# 	# flag the candidates in the original gene table
-# 	mutate(is_candidate = gene_name %in% m6a_candidate_gene_names) %>%
-# 	# join the median tpm counts for ip
-# 	left_join(counts_for_fasta, by = 'gene_id') %>%
-# 	# create names for the fasta output, which contain tpm-s attached to the gene name
-# 	mutate(tpm = ifelse(is.na(tpm), 0, tpm),
-# 		   fasta_name = paste0(gene_id, ' ', tpm)) %>%
-# 	# take only genes for which we have sequences
-# 	filter(gene_id %in% names(gene_sequences))
-
 # we don't need this, as we compare candidates to rest...
 m6a_candidate_seq <- gene_sequences[m6a_candidate_ids]
+m6a_candidate_tx_seq <- tx_sequences[filter(tx2gene, gene_id %in% m6a_candidate_ids) %$% tx_id]
 
 rest_seq <- gene_sequences[rest_ids]
 
@@ -862,6 +879,9 @@ control_seq_2 <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult =
 writeXStringSet(m6a_candidate_seq,
 				paste0(michela_m6a_root, 'data/candidates/candidates.fa'))
 
+writeXStringSet(m6a_candidate_tx_seq,
+				paste0(michela_m6a_root, 'data/candidates/candidates_tx.fa'))
+
 writeXStringSet(control_seq,
 				paste0(michela_m6a_root, 'data/candidates/control_seqs.fa'))
 
@@ -871,6 +891,147 @@ writeXStringSet(control_seq,
 writeXStringSet(rest_seq,
 				paste0(michela_m6a_root, 'data/candidates/rest_seqs.fa'))
 ```
+
+### Candidate motif analysis
+
+```{r read_motif_result, echo = F}
+m6a_candidate_motifs <- read_table2(paste0(michela_m6a_root, 'data/candidates/fimo_out/fimo.tsv')) %>%
+	dplyr::rename(tx_id = sequence_name)
+
+feature_lengths <- gene_features %>%
+	dplyr::select(tx_id, fivep_start:cds_length) %>%
+	group_by(tx_id) %>%
+	summarise(threep = sum(threep_end - threep_start, na.rm =T),
+			  fivep = sum(fivep_end - fivep_start, na.rm=T),
+			  cds = max(cds_length))
+
+motif_coverage <- m6a_candidate_motifs %>%
+	dplyr::select(tx_id, start, motif_id) %>%
+	inner_join(tx2gene, by='tx_id') %>%
+	inner_join(feature_lengths, by = 'tx_id') %>%
+	mutate(fivep_start = 0,
+		   cds_start = fivep,
+		   threep_start = fivep + cds)
+
+fivep_coverage <- motif_coverage %>%
+	filter(start < cds_start) %>%
+	mutate(start = start / fivep - 1) %>%
+	gather('feature_type', 'feature_length', threep:cds) %>%
+	filter(feature_type == 'fivep')
+
+cds_coverage <- motif_coverage %>%
+	filter(start >= cds_start, start < threep_start) %>%
+	mutate(start = (start - cds_start) / cds) %>%
+	gather('feature_type', 'feature_length', threep:cds) %>%
+	filter(feature_type == 'cds')
+
+threep_coverage <- motif_coverage %>%
+	filter(start > threep_start) %>%
+	mutate(start = 1 + (start - threep_start) / threep) %>%
+	gather('feature_type', 'feature_length', threep:cds) %>%
+	filter(feature_type == 'threep')
+```
+
+```{r plot_motif_coverage, echo = F, fig.width = 10, fig.height = 5}
+all_coverage <- bind_rows(fivep_coverage,
+		  cds_coverage,
+		  threep_coverage)
+
+all_coverage <- all_coverage %>%
+	mutate(bin = ntile(start, 30) - 0.5) %>%
+	group_by(gene_name, bin) %>% 
+	mutate(norm_count = n()) %>%
+	group_by(gene_name) %>%
+	# normalise the count by the number of motifs in a given gene
+	mutate(norm_count = norm_count  / (sum(norm_count)))
+
+
+all_coverage %>%
+	ggplot(aes(start)) +
+		#geom_density(adjust = 1/5) +
+		geom_histogram(bins=30) +
+		scale_x_continuous(labels = c('5\'', 'CDS Start', 'CDS End', '3\'')) +
+		geom_vline(xintercept = 1, linetype = 'dashed') +
+		geom_vline(xintercept = 0, linetype = 'dashed') +
+		facet_wrap(~motif_id) +
+		labs(x='') +
+		ggtitle('Coverage of top5 differential motifs in m6a candidates')
+```
+
+```{r define_motif_coverage_function, echo = F}
+coverage_plot <- function(all_coverage, gene_names){
+	all_coverage %>%
+	group_by(feature_type, gene_name, bin, motif_id) %>%
+	# add counts belonging to the same motif so that the plot is cleaner
+	summarise(norm_count = sum(norm_count)) %>%
+	filter(gene_name %in% gene_names) %>%
+	ggplot(aes(bin, norm_count, fill = motif_id)) +
+		geom_histogram(position = 'stack', stat ='identity', color = 'black', width = 1) +
+		scale_x_continuous(limits = c(-1, 31), breaks = c(0,10, 20, 30), labels = c('5\'', 'cdsS', 'cdsE', '3\''), expand = c(0,0)) +
+		scale_y_continuous(expand = c(0,0)) +
+		geom_vline(xintercept = 10, linetype = 'dashed') +
+		geom_vline(xintercept = 20, linetype = 'dashed') +
+		scale_fill_manual(values=wes_palette(n=5, name="Zissou1")) +
+		facet_wrap(~gene_name, ncol = 4) +
+		labs(x = '')
+}
+
+m6a_motif_count <- all_coverage %>%
+	group_by(gene_name, feature_type) %>%
+	summarise(count = n()) %>%
+	spread(feature_type, count, fill = 0)
+```
+
+```{r plot_genes_with_many_motifs, echo = F, fig.width = 10, fig.height = 10}
+m6a_motif_count %>% 
+	filter(cds + threep + fivep >= 40) %$%
+	gene_name %>%
+	coverage_plot(all_coverage, .) +
+		ggtitle('Genes with at least 40 total motifs')
+
+```
+
+```{r plot_genes_with_3p_motif, echo = F, fig.width = 10, fig.height = 8}
+# get genes which are only int the 3p
+m6a_motif_count %>% 
+	filter(cds + fivep + threep > 10) %>%
+	filter((cds < 10& fivep < 10 & threep - 10 > cds & threep - 10 > fivep) |
+		   ( threep/cds > 3 & threep/fivep > 3)) %$%
+	gene_name %>%
+	coverage_plot(all_coverage, .) +
+		ggtitle('Genes with most motifs in 3\' UTR')
+```
+
+```{r plot_genes_with_5p_motif, echo = F, fig.width = 10, fig.height = 6}
+m6a_motif_count %>% 
+	filter(cds + fivep + threep > 10) %>%
+	filter((cds < 10 & threep < 10 & fivep - 10 > cds & fivep - 10 > threep) |
+		   (fivep/cds > 3 & fivep/threep > 3)) %$%
+	gene_name %>%
+	coverage_plot(all_coverage, .) +
+		ggtitle('Genes with most motifs in 5\' UTR')
+```
+
+```{r plot_genes_with_cds_motif, echo = F, fig.width = 10, fig.height = 6}
+m6a_motif_count %>% 
+	filter(cds + fivep + threep > 10) %>%
+	filter((fivep < 10 & threep < 10 & cds > 10)|
+		   (cds/fivep > 3 & cds/threep > 3)) %$%
+	gene_name %>%
+	coverage_plot(all_coverage, .) +
+		ggtitle('Genes with most motifs in CDS')
+```
+
+```{r plot_genes_with_motif_in_both_utrs, echo = F, fig.width = 10, fig.height = 6}
+m6a_motif_count %>% 
+	filter(cds + fivep + threep > 10) %>%
+	filter((fivep - 10 > cds & threep - 10 > cds & cds < 10)|
+		   (fivep/cds > 3 & threep/cds > 3)) %$%
+	gene_name %>%
+	coverage_plot(all_coverage, .) +
+		ggtitle('Genes with most motifs in CDS')
+```
+
 
 ### Look at circles in polyA data
 
@@ -1043,7 +1204,6 @@ m6a_go_res <- m6a_go %>%
 	GenTable(m6a_go, classicFisher =.)
 ```
 
-
 ```{r plot_enriched_genes_tpm_density, echo = F, eval = F}
 rfp_tpm_ranked %>%
 	gather('experiment', 'tpm', c('ld_1', 'ld_2', 'hd_1', 'hd_2')) %>%
@@ -1077,14 +1237,7 @@ resLFC %>%
 ## Translation efficiency
 
 ```{r download_cds_lengths, echo = F}
-cds_lengths <- ensembl %>%
-	getBM(
-		  attributes = c('ensembl_gene_id',
-						 'ensembl_transcript_id',
-						 'cds_length'),
-		  mart = .) %>%
-	as_tibble %>%
-	dplyr::rename(gene_id = ensembl_gene_id) %>%
+cds_lengths <- gene_features %>%
 	group_by(gene_id) %>%
 	summarise(cds_length = max(cds_length))
 ```
@@ -1170,9 +1323,6 @@ kallisto_data <- samples %>% ldply(function(smpl){
 # import kallisto with tximport
 ###
 
-tx2gene <- txs %>%
-	transmute(TXNAME = tx_id,
-			  GENEID = gene_id)
 
 kallisto_metadata <- tibble(sample = samples) %>%
 	separate(sample, into = c('condition', 'replicate', 'rnd'), remove = F) %>%
