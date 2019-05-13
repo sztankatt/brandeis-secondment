@@ -3,8 +3,8 @@ title: "m6a analysis"
 author: "tsztank"
 date: "`r format(Sys.time(), '%d/%B/%Y')`"
 output: 
-  html_document:
-    theme: journal
+ html_document:
+  toc: true
 ---
 
 ```{r knitr_options, include=FALSE, cache=FALSE}
@@ -721,10 +721,12 @@ pl_in <- enrichment_diff %>%
 pl_in %>%
 	ggplot(aes(median_ip_enrichment, median_igg_enrichment, color = sig)) +
 		geom_point(size = 0.7, alpha = 0.5) +
-		scale_y_continuous(breaks = 0:10, limits = c(0,10)) +
-		scale_x_continuous(breaks = 0:10, limits = c(0,10)) +
+		geom_segment(x = 1, y = 0, xend = 4, yend = 3, linetype = 'dashed', color = 'red') +
+		scale_y_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
+		scale_x_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
 		scale_color_manual(values = c('black', 'red')) +
 		coord_fixed() +
+		expand_limits(x = 0, y = 0) +
 		theme(legend.position = 'none') +
 		labs(x = 'median(m6A/input)', y = 'median(igg/input)') +
 		ggtitle('ip vs igg enrichment', 'ip vs input enriched genes in red')
@@ -798,7 +800,7 @@ big_table_enrichment_diff <- enrichment_diff %>%
 	dplyr::rename(p_value = padj)
 
 m6a_candidate_table <- big_table_enrichment_diff %>%
-	filter(median_enrichment_diff > 2, log2FoldChange > 1, p_value < 0.05) %>%
+	filter(median_enrichment_diff > 1, log2FoldChange > 1, p_value < 0.05) %>%
 	dplyr::select(-log2FoldChange)
 
 m6a_candidate_median_ip_tpm <- m6a_candidate_table %>%
@@ -873,6 +875,8 @@ get_control_seq <- function(m6a_candidate_seq, rest_seq, sample_size_mult){
 # select control genes, one per candidate, with rouglhy the same length, by random
 control_seq <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 1)
 control_seq_2 <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 2)
+control_tx_seq <- tx_sequences[filter(tx2gene, gene_id %in% names(control_seq)) %$% tx_id]
+control_tx_2_seq <- tx_sequences[filter(tx2gene, gene_id %in% names(control_seq_2)) %$% tx_id]
 ```
 
 ```{r save_sequences, echo = F}
@@ -885,8 +889,11 @@ writeXStringSet(m6a_candidate_tx_seq,
 writeXStringSet(control_seq,
 				paste0(michela_m6a_root, 'data/candidates/control_seqs.fa'))
 
-writeXStringSet(control_seq,
-				paste0(michela_m6a_root, 'data/candidates/control_seqs_2.fa'))
+writeXStringSet(control_tx_seq,
+				paste0(michela_m6a_root, 'data/candidates/control_seqs_tx.fa'))
+
+writeXStringSet(control_tx_seq,
+				paste0(michela_m6a_root, 'data/candidates/control_seqs_2_tx.fa'))
 
 writeXStringSet(rest_seq,
 				paste0(michela_m6a_root, 'data/candidates/rest_seqs.fa'))
@@ -895,103 +902,75 @@ writeXStringSet(rest_seq,
 ### Candidate motif analysis
 
 ```{r read_motif_result, echo = F}
-m6a_candidate_motifs <- read_table2(paste0(michela_m6a_root, 'data/candidates/fimo_out/fimo.tsv')) %>%
-	dplyr::rename(tx_id = sequence_name)
+source(paste0(root_dir, 'shared/code/R/parseFimoOut.R'))
+a <- 1
+m6a_candidate_motif_coverage <- paste0(michela_m6a_root, 'data/candidates/fimo_candidates/fimo.tsv') %>%
+	parseFimoOut(gene_features, tx2gene, nbins = 15)
 
-feature_lengths <- gene_features %>%
-	dplyr::select(tx_id, fivep_start:cds_length) %>%
-	group_by(tx_id) %>%
-	summarise(threep = sum(threep_end - threep_start, na.rm =T),
-			  fivep = sum(fivep_end - fivep_start, na.rm=T),
-			  cds = max(cds_length))
-
-motif_coverage <- m6a_candidate_motifs %>%
-	dplyr::select(tx_id, start, motif_id) %>%
-	inner_join(tx2gene, by='tx_id') %>%
-	inner_join(feature_lengths, by = 'tx_id') %>%
-	mutate(fivep_start = 0,
-		   cds_start = fivep,
-		   threep_start = fivep + cds)
-
-fivep_coverage <- motif_coverage %>%
-	filter(start < cds_start) %>%
-	mutate(start = start / fivep - 1) %>%
-	gather('feature_type', 'feature_length', threep:cds) %>%
-	filter(feature_type == 'fivep')
-
-cds_coverage <- motif_coverage %>%
-	filter(start >= cds_start, start < threep_start) %>%
-	mutate(start = (start - cds_start) / cds) %>%
-	gather('feature_type', 'feature_length', threep:cds) %>%
-	filter(feature_type == 'cds')
-
-threep_coverage <- motif_coverage %>%
-	filter(start > threep_start) %>%
-	mutate(start = 1 + (start - threep_start) / threep) %>%
-	gather('feature_type', 'feature_length', threep:cds) %>%
-	filter(feature_type == 'threep')
+m6a_control_motif_coverage <- paste0(michela_m6a_root, 'data/candidates/fimo_control/fimo.tsv') %>%
+	parseFimoOut(gene_features, tx2gene, nbins = 15)
 ```
 
-```{r plot_motif_coverage, echo = F, fig.width = 10, fig.height = 5}
-all_coverage <- bind_rows(fivep_coverage,
-		  cds_coverage,
-		  threep_coverage)
-
-all_coverage <- all_coverage %>%
-	mutate(bin = ntile(start, 30) - 0.5) %>%
-	group_by(gene_name, bin) %>% 
-	mutate(norm_count = n()) %>%
-	group_by(gene_name) %>%
-	# normalise the count by the number of motifs in a given gene
-	mutate(norm_count = norm_count  / (sum(norm_count)))
-
-
-all_coverage %>%
-	ggplot(aes(start)) +
-		#geom_density(adjust = 1/5) +
-		geom_histogram(bins=30) +
+```{r plot_motif_coverage, fig.width = 10, fig.height = 5, echo = F}
+plot_all_motif_coverage <- function(motif_coverage){
+	motif_coverage %>%
+	ggplot(aes(start, fill = motif_id)) +
+		geom_histogram(aes(y=..count../sum(..count..)),binwidth = 0.1,boundary = 0,  closed = 'left', color = 'black') +
 		scale_x_continuous(labels = c('5\'', 'CDS Start', 'CDS End', '3\'')) +
+		scale_y_continuous(breaks = c(0.0, 0.01, 0.02)) +
 		geom_vline(xintercept = 1, linetype = 'dashed') +
 		geom_vline(xintercept = 0, linetype = 'dashed') +
-		facet_wrap(~motif_id) +
+		scale_fill_manual(values=wes_palette(n=5, name="Zissou1")) +
+		facet_grid(motif_id~type) +
 		labs(x='') +
-		ggtitle('Coverage of top5 differential motifs in m6a candidates')
+		ggtitle('Coverage of top5 differential motifs in m6a candidates') +
+		theme(strip.text.y = element_blank())
+}
+
+m6a_candidate_motif_coverage$type = 'candidate'
+m6a_control_motif_coverage$type = 'control'
+
+all_motif_coverage <- bind_rows(m6a_candidate_motif_coverage,
+								m6a_control_motif_coverage)
+
+all_motif_coverage %>%
+	plot_all_motif_coverage
 ```
 
 ```{r define_motif_coverage_function, echo = F}
-coverage_plot <- function(all_coverage, gene_names){
-	all_coverage %>%
+coverage_plot <- function(m6a_candidate_motif_coverage, gene_names){
+	m6a_candidate_motif_coverage %>%
 	group_by(feature_type, gene_name, bin, motif_id) %>%
 	# add counts belonging to the same motif so that the plot is cleaner
 	summarise(norm_count = sum(norm_count)) %>%
 	filter(gene_name %in% gene_names) %>%
 	ggplot(aes(bin, norm_count, fill = motif_id)) +
 		geom_histogram(position = 'stack', stat ='identity', color = 'black', width = 1) +
-		scale_x_continuous(limits = c(-1, 31), breaks = c(0,10, 20, 30), labels = c('5\'', 'cdsS', 'cdsE', '3\''), expand = c(0,0)) +
-		scale_y_continuous(expand = c(0,0)) +
+		scale_x_continuous(limits = c(-1, 16), breaks = c(0,5, 10, 15), labels = c('5\'', 'cdsS', 'cdsE', '3\''), expand = c(0,0)) +
+		scale_y_continuous(expand = c(0,0), limits = c(0.0, 1.0), breaks = c(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)) +
+		geom_vline(xintercept = 5, linetype = 'dashed') +
 		geom_vline(xintercept = 10, linetype = 'dashed') +
-		geom_vline(xintercept = 20, linetype = 'dashed') +
 		scale_fill_manual(values=wes_palette(n=5, name="Zissou1")) +
 		facet_wrap(~gene_name, ncol = 4) +
 		labs(x = '')
 }
 
-m6a_motif_count <- all_coverage %>%
+m6a_motif_count <- m6a_candidate_motif_coverage %>%
 	group_by(gene_name, feature_type) %>%
 	summarise(count = n()) %>%
 	spread(feature_type, count, fill = 0)
 ```
 
-```{r plot_genes_with_many_motifs, echo = F, fig.width = 10, fig.height = 10}
+```{r plot_genes_with_many_motifs, echo = F, fig.width = 10, fig.height = 7.5, eval = F}
 m6a_motif_count %>% 
 	filter(cds + threep + fivep >= 40) %$%
 	gene_name %>%
-	coverage_plot(all_coverage, .) +
+	coverage_plot(m6a_candidate_motif_coverage, .) +
 		ggtitle('Genes with at least 40 total motifs')
 
 ```
 
-```{r plot_genes_with_3p_motif, echo = F, fig.width = 10, fig.height = 8}
+```{r plot_genes_with_3p_motif, echo = F, fig.width = 10, fig.height = 14}
 # get genes which are only int the 3p
 m6a_3p_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
@@ -1000,11 +979,11 @@ m6a_3p_candidates <- m6a_motif_count %>%
 	gene_name
 
 m6a_3p_candidates %>%
-	coverage_plot(all_coverage, .) +
+	coverage_plot(m6a_candidate_motif_coverage, .) +
 		ggtitle('Genes with most motifs in 3\' UTR')
 ```
 
-```{r plot_genes_with_5p_motif, echo = F, fig.width = 10, fig.height = 6}
+```{r plot_genes_with_5p_motif, echo = F, fig.width = 10, fig.height = 4.5}
 m6a_5p_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((cds < 10 & threep < 10 & fivep - 10 > cds & fivep - 10 > threep) |
@@ -1012,11 +991,11 @@ m6a_5p_candidates <- m6a_motif_count %>%
 	gene_name
 
 m6a_5p_candidates %>%
-	coverage_plot(all_coverage, .) +
+	coverage_plot(m6a_candidate_motif_coverage, .) +
 		ggtitle('Genes with most motifs in 5\' UTR')
 ```
 
-```{r plot_genes_with_cds_motif, echo = F, fig.width = 10, fig.height = 6}
+```{r plot_genes_with_cds_motif, echo = F, fig.width = 10, fig.height = 4.5}
 m6a_cds_candidates <- m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((fivep < 10 & threep < 10 & cds > 10)|
@@ -1024,20 +1003,19 @@ m6a_cds_candidates <- m6a_motif_count %>%
 	gene_name
 
 m6a_cds_candidates %>%
-	coverage_plot(all_coverage, .) +
+	coverage_plot(m6a_candidate_motif_coverage, .) +
 		ggtitle('Genes with most motifs in CDS')
 ```
 
-```{r plot_genes_with_motif_in_both_utrs, echo = F, fig.width = 10, fig.height = 6}
+```{r plot_genes_with_motif_in_both_utrs, echo = F, fig.width = 10, fig.height = 4.5, eval = F}
 m6a_motif_count %>% 
 	filter(cds + fivep + threep > 10) %>%
 	filter((fivep - 10 > cds & threep - 10 > cds & cds < 10)|
 		   (fivep/cds > 3 & threep/cds > 3)) %$%
 	gene_name %>%
-	coverage_plot(all_coverage, .) +
+	coverage_plot(m6a_candidate_motif_coverage, .) +
 		ggtitle('Genes with most motifs in CDS')
 ```
-
 
 ### Look at circles in polyA data
 
@@ -1099,7 +1077,14 @@ polya_circs_table <- inner_join(to_join_1, to_join_2, by = c('gene_id', 'gene_na
 write_excel_csv(polya_circs_table, paste0(michela_m6a_root, 'data/candidates/polya_circs_table.csv'))
 ```
 
-## Uniting with data from RFP (Nagarjuna 2017)
+```{r plot_circles_which_are_present_in_polya, echo = F}
+circs_abundances %>%
+	ggplot(aes(condition, value, fill = condition)) +
+		geom_violin() +
+		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+		ggtitle('Counts across the BS junction')
+```
+
 
 ```{r read_fc_output, echo = F}
 rfp_fc <- readRDS(paste0(root_dir, 'nagarjuna/rfp/data/counts/feature_counts.rds'))
@@ -1170,7 +1155,7 @@ resLFC <- lfcShrink(dds = dds, res = res, coef = 'condition_hd_vs_ld') %>%
 	left_join(genes, by = 'gene_id')
 ```
 
-```{r plot_enriched_genes_tpm_by_rank, echo = F, fig.width = 10, fig.height = 7}
+```{r plot_enriched_genes_tpm_by_rank, echo = F, fig.width = 10, fig.height = 7, eval = F}
 library(mgcv)
 sig_genes_up <- resLFC %>%
 	filter(log2FoldChange > 1, padj < 0.01) %$%
@@ -1231,9 +1216,7 @@ rfp_tpm_ranked %>%
 		coord_fixed()
 ```
 
-### Volcano plot of LD vs HD
-
-```{r plot_ld_vs_hd_volcano, echo = F}
+```{r plot_ld_vs_hd_volcano, echo = F, eval = F}
 resLFC %>%
 	mutate(neg_log10_p = -1 * log10(padj)) %>%
 	ggplot(aes(log2FoldChange, neg_log10_p)) +
@@ -1304,36 +1287,37 @@ abundances %>%
 
 ### Abundance of m6a candidates
 
-```{r plot_abundance_of_candidates, echo =F}
-abundances$m6a_type = 'not_methylated'
+```{r plot_abundance_of_candidates, echo = F}
+abundances$m6a_type = 'normal'
 
-abundances <- abundances %>%
-	mutate(m6a_type = ifelse(gene_id %in% m6a_candidate_ids, 'methylated', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_5p_candidates, '5p_methylated', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_3p_candidates, '3p_methylated', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_cds_candidates, 'cds_methylated', m6a_type)) %>%
-	filter(m6a_type != 'methylated')
+pl_in <- abundances %>%
+	mutate(m6a_type = ifelse(gene_id %in% m6a_candidate_ids, 'neg', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_5p_candidates, '5\'', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_3p_candidates, '3\'', m6a_type),
+		   m6a_type = ifelse(gene_name %in% m6a_cds_candidates, 'CDS', m6a_type),
+		   m6a_type = ifelse(gene_id %in% names(control_seq), 'control', m6a_type)) %>%
+	filter(m6a_type != 'normal') %>% 
+	filter(condition == 'ld') %>%
+	dplyr::select(-mnc.input) %>%
+	gather('observation', 'value', mnc.rfp:translation_efficiency) %>%
+	filter(is.finite(value))
 
-m6a_mu <- abundances %>%
-	group_by(m6a_type) %>%
-	summarise(grp.mean = mean(mnc.rfp))
+m6a_mu <- pl_in %>%
+	group_by(m6a_type, observation) %>%
+	summarise(grp.median = median(value))
 
-abundances %>%
-	ggplot(aes(mnc.rfp, color = m6a_type)) +
-		geom_density()+
-		scale_x_log10() +
-		facet_wrap(~m6a_type, ncol = 1) +
-		geom_vline(xintercept = m6a_mu %>% filter(m6a_type == 'not_methylated') %$% grp.mean,
-				   linetype = 'dashed', color = 'purple') +
-		geom_vline(data=m6a_mu, aes(xintercept=grp.mean, color=m6a_type),
-             linetype="dashed") +
-		ggtitle('RFP abundances of differently methylated genes')
-
-
+pl_in %>%
+	ggplot(aes(m6a_type, value, color = m6a_type)) +
+		geom_boxplot() +
+		scale_y_log10() +
+		ggtitle('RFP abundances of differently methylated genes') +
+		facet_wrap(~observation) +
+		theme(legend.position = 'bottom') +
+		labs(x = '', color = 'methylation type') 
 ```
 
 
--
+---
 # Kallisto
 
 Second, we also calculated the transcript counts with using kallisto (ref needed). This, instead of mapping the reads creates pseudo-counts with building a probabilistic model.
