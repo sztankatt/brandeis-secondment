@@ -333,15 +333,18 @@ plot_grid(get_cor_plot(esat_counts, 'ip_1', 'ip_3'),
 		  get_cor_plot(esat_counts, 'ip_2', 'ip_3'),
 		  get_cor_plot(esat_counts, 'ip_1', 'ip_2'),
 		  ncol = 3)
+
 ```
 
 ##### TPMs
 
 ```{r plot_tpm_correlations, echo = F, fig.height = 3, fig.width = 10}
-plot_grid(get_cor_plot(esat_counts, 'ip_3', 'ip_1', quant_type = 'tpm'),
+ttl <- ggdraw()  + draw_label('Correlation between m6A replicates is high', fontface = 'bold')
+p <- plot_grid(get_cor_plot(esat_counts, 'ip_3', 'ip_1', quant_type = 'tpm'),
 		  get_cor_plot(esat_counts, 'ip_3', 'ip_2', quant_type = 'tpm'),
 		  get_cor_plot(esat_counts, 'ip_1', 'ip_2', quant_type = 'tpm'),
 		  ncol = 3)
+plot_grid(ttl, p, ncol = 1, rel_heights = c(0.1, 1))
 ```
 
 #### Downsampled correlations
@@ -495,14 +498,19 @@ mu <- enrichment_medians %>%
 	group_by(condition) %>%
 	summarise(grp.mean = mean(median_enrichment))
 
+wpl <- wes_palette(n=3, name = 'GrandBudapest1')
+color_values <- c('igg' = wpl[1],
+				  'input' = wpl[2],
+				  'ip' = wpl[3])
+
 # visualise enrichment, plotting also the means
 enrichment_medians %>%
-	mutate(condition = factor(condition, levels = c('igg', 'input', 'ip'))) %>%	
+	#mutate(condition = factor(condition, levels = c('igg', 'input', 'ip'))) %>%	
 	ggplot(aes(median_enrichment, color = condition, fill = condition)) +
 		geom_density(alpha = 0.3) +
 		geom_vline(data = mu, aes(xintercept = grp.mean, color = condition), size = 1, linetype='dashed') +
-		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
-		scale_color_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+		scale_fill_manual(values=color_values) +
+		scale_color_manual(values=color_values) +
 		scale_x_continuous(breaks = 0:5, limits = c(0, 5.5)) +
 		ggtitle('Median enrichment of ip and igg versus input')
 ```
@@ -729,7 +737,7 @@ pl_in %>%
 		expand_limits(x = 0, y = 0) +
 		theme(legend.position = 'none') +
 		labs(x = 'median(m6A/input)', y = 'median(igg/input)') +
-		ggtitle('ip vs igg enrichment', 'ip vs input enriched genes in red')
+		ggtitle('ip vs igg enrichment', 'ip vs input DE genes with p < 0.05 in red')
 ```
 
 
@@ -1076,7 +1084,7 @@ m6a_go <- esat_counts %>%
 			  gene_id2go = gene_id2go)
 
 m6a_go_res <- m6a_go %>%
-	runTest(algorithm='classic', statistic='fisher') %>%
+	runTest(statistic='fisher') %>%
 	GenTable(m6a_go, classicFisher =.)
 ```
 
@@ -1087,6 +1095,7 @@ m6a_go_res %>%
 	mutate(pval = as.numeric(classicFisher),
 		   foldChange = Significant / Expected) %>%
 	arrange(foldChange) %>%
+	filter(Significant > 4) %>%
 	mutate(pos = 1:n(),
 		   Term = factor(Term, levels = Term),
 		   star = ifelse(pval < 0.05, '*', ''),
@@ -1163,10 +1172,14 @@ write_excel_csv(polya_circs_table, paste0(michela_m6a_root, 'data/candidates/pol
 
 ```{r plot_circles_which_are_present_in_polya, echo = F}
 circs_abundances %>%
-	ggplot(aes(condition, value, fill = condition)) +
+	dplyr::rename(abundance = value) %>%
+	ggplot(aes(condition, abundance, fill = condition)) +
 		geom_violin() +
+		geom_point(position = 'jitter') +
+		scale_y_continuous(trans = 'log2') +
 		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
-		ggtitle('Counts across the BS junction')
+		ggtitle('circRNAs detected in PolyA data',
+				subtitle = 'Counts across the BS junction')
 ```
 
 ```{r read_fc_output, echo = F}
@@ -1414,6 +1427,7 @@ fraction_tpm %>%
 	mutate(normalised_tpm = mean.tpm / mnc) %>%
 	filter(m6a_type != 'normal',
 		   condition %in% c('pel1', 'pel2', 'sup2')) %>%
+	mutate(condition = mapvalues(condition, to = c('nuc', 'syn', 'cyt'), from = condition)) %>%
 	ggplot(aes(condition, mean.tpm, color = m6a_type)) +
 		geom_boxplot() +
 		scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000), labels = c(0.1, 1, 10, 100, 1000, 10000)) +
@@ -1472,9 +1486,10 @@ fraction_reads <- fraction_samples %>%
 fraction_circs <- circs.se %>% resTable %>% as_tibble %>%
 	gather('observation', 'value', homog_1_circ:sup2_2_ratio) %>%
 	separate(observation, into = c('condition', 'replicate', 'observation'), sep = '[_]') %>%
-	filter(observation == 'circ') %>%
+	filter(observation == 'circ', width > 50)
+
+m6a_host_circs <- fraction_circs %>%
 	full_join(gene2met, by = 'gene_id') %>%
-	filter(m6a_type == 'CDS') %>%
 	# join with the number of input reads, so we can normalise
 	inner_join(fraction_reads, by = c('condition', 'replicate')) %>%
 	# normalise the valus to account for library size
@@ -1482,7 +1497,7 @@ fraction_circs <- circs.se %>% resTable %>% as_tibble %>%
 	group_by(gene_id, condition, m6a_type) %>%
 	summarise(mnc = mean(norm_count))
 
-fraction_circs %>%
+m6a_host_circs %>%
 	filter(condition %in% c('pel1', 'pel2', 'sup2')) %>%
 	ggplot(aes(condition, mnc, color = m6a_type)) +
 		geom_boxplot() +
@@ -1490,6 +1505,49 @@ fraction_circs %>%
 		scale_y_log10()
 ```
 
+```{r calculate_fraction_circ_abundance, echo = F}
+fraction_circ_abundance <- fraction_circs %>%
+	inner_join(fraction_reads, by = c('condition', 'replicate')) %>%
+	mutate(norm_count = value / input_reads * 1e7)
+
+fraction_circ_abundance %>%
+	ggplot(aes(norm_count, color = condition)) +
+		geom_density(adjust = 2) + 
+		scale_x_log10() +
+		scale_color_manual(values = wes_palette(n=5, name ='Darjeeling1')) +
+		ggtitle('circRNA abundance distribution similar between fractions')
+```
+
+```{r plot_correlations_between_fractions, echo = F}
+ticks <- c(0.1, 1, 10, 100)
+
+pl_in <- fraction_circ_abundance %>%
+	group_by(chr, start, end, strand, condition) %>%
+	summarise(mnc = mean(norm_count)) %>%
+	filter(condition %in% c('pel1', 'pel2', 'sup2')) %>%
+	spread(condition, mnc) %>%
+	dplyr::rename(nuclei = pel1,
+				  synapses = pel2,
+				  cytoplasm = sup2)
+
+pl1 <- pl_in %>%
+	ggplot(aes(cytoplasm, synapses)) +
+		geom_point(size = 0.7, alpha = 0.8) +
+		scale_x_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
+		scale_y_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
+		coord_fixed()
+
+pl2 <- pl_in %>%
+	ggplot(aes(nuclei, cytoplasm)) +
+		geom_point(size = 0.7, alpha = 0.8) +
+		scale_x_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
+		scale_y_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
+		coord_fixed()
+
+ttl <- ggdraw()  + draw_label('Localisation of circRNAs', fontface = 'bold')
+p <- plot_grid(pl1, pl2, ncol = 2)
+plot_grid(ttl, p, ncol = 1, rel_heights = c(0.1, 1))
+```
 
 ---
 # Kallisto
