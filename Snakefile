@@ -1,6 +1,7 @@
 configfile: "config.yaml"
 
 species = 'dm6'
+bwa_index = config['knowledge']['indices'][species]['bwa']
 
 data_root = '{person}/{project}/data/'
 
@@ -35,7 +36,8 @@ find_circ2_out_path = find_circ2_root + '{sample}/'
 find_circ2_bwa_err = find_circ2_out_path + 'bwa.stderr.log'
 find_circ2_bwa_pipe = find_circ2_out_path + 'bwa_mapped.pipe.bam'
 find_circ2_err = find_circ2_out_path + 'fc.stderr.log'
-find_circ2_out = find_circ2_out_path + 'find_circ_run/'
+find_circ2_run_dir = find_circ2_out_path + 'find_circ_run/'
+find_circ2_out = [find_circ2_run_dir + suffix for suffix in ['circ_splice_sites.bed', 'lin_splice_sites.bed']]
 
 # feature counts out
 fc_out_path = data_root + 'counts/'
@@ -64,8 +66,13 @@ def get_fc_in_pattern(wildcards):
 
 rule all:
 	input:
+		get_out('michela', 'm6a', fastqc_out),
+		get_out('nagarjuna', 'rfp', fastqc_out),
+		get_out('mor_osnat', 'synaptosomes', fastqc_out),
 		get_out('michela', 'm6a', esat_out),
+		get_out('michela', 'm6a', find_circ2_out),
 		get_out('mor_osnat', 'synaptosomes', find_circ2_out),
+		get_out('mor_osnat', 'synaptosomes', fc_out),
 		get_out('nagarjuna', 'rfp', fc_out)
 
 rule create_read_symlinks:
@@ -165,15 +172,16 @@ rule find_circ2:
 	input:
 		find_circ2_bwa_pipe
 	output:
-		fc_out= directory(find_circ2_out)
+		find_circ2_out
 	threads: 8
 	params:
-		fc_err= find_circ2_err
+		find_circ2_err= find_circ2_err,
+		find_circ2_run_dir= find_circ2_run_dir
 	conda:
 		'shared/envs/find_circ2.yaml'
 	shell:
 		"""
-		python2 {fc2} --bam --genome {bwa_index} --name {wildcards.sample} --output {output.fc_out} {input} 2> {params.fc_err} 
+		python2 {fc2} --bam --genome {bwa_index} --name {wildcards.sample} --output {params.find_circ2_run_dir} {input} 2> {params.find_circ2_err} 
 		"""
 
 rule count_features:

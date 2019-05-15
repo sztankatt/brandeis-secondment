@@ -7,7 +7,7 @@ ribo_depleted_log= ribo_depleted_root + '{sample}.log'
 
 # star settings
 star_suffix = 'Aligned.sortedByCoord.out.bam'
-star_out_dir = mapping_root
+star_out_dir = mapping_root + 'star/'
 star_out_prefix = star_out_dir + '{sample}.'
 star_out = star_out_prefix + star_suffix
 star_err_file = star_out_prefix + 'stderr.txt'

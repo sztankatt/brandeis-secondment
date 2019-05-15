@@ -54,6 +54,7 @@ knowledge:
             bt2_rRNA: /data/rajewsky/indices/dm6_rRNA_bowtie2_2.1.0/bt2_dm_rRNA
             bt1: /data/rajewsky/indices/dm6_bowtie_1.1.1/dm6.fa
             bt2_rRNA_plus: /data/rajewsky/indices/dm6_rRNA_plus_bowtie2_2.3.5/dm6_rRNA_plus
+            bwa: /data/rajewsky/indices/dm6_bwa_0.7.12-r1039/dm6.fa
     adaptors:
         illumina: shared/illumina_adaptors.fa
 scripts:
