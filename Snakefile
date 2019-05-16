@@ -43,15 +43,22 @@ find_circ2_out = [find_circ2_run_dir + suffix for suffix in ['circ_splice_sites.
 fc_out_path = data_root + 'counts/'
 fc_out = fc_out_path + 'feature_counts.rds'
 
+# normalised bigwig 
+normalised_bigwig_in_bam = mapping_root + '{filepath}.bam'
+normalised_bigwig_in_bam_index = normalised_bigwig_in_bam + '.bai'
+bigwig_root = data_root + 'bigwig/'
+normalised_bigwig_out = bigwig_root + 'normalised/{sample}.{strand}.bw'
+
 # include two snakefiles for star mapping and rfp read mapping
 include: 'shared/code/snakefiles/mapWithStar.Snakefile'
 include: 'shared/code/snakefiles/mapRFPReads.Snakefile'
 
 ### PREPARE FILES FOR DYNAMIC RULES ###
-def get_out(person, project, to_expand):
-	return expand(to_expand, person=person, project=project, sample=config['raw_data'][person][project]['samples'].keys())
+def get_out(person, project, to_expand, **kwargs):
+	return expand(to_expand, person=person, project=project, sample=config['raw_data'][person][project]['samples'].keys(), **kwargs)
 
-def get_fc_in_pattern(wildcards):
+### for some rules we have to load values dinamically
+def get_lib_type(wildcards):
 	lib_type = config['raw_data'][wildcards.person][wildcards.project]['lib_type']
 	if lib_type == 'rfp':
 		pattern = rfp_mapped_out
@@ -60,10 +67,22 @@ def get_fc_in_pattern(wildcards):
 	else:	
 		raise Exception('lib_type not valid for fc pattern')
 	
-	samples = config['raw_data'][wildcards.person][wildcards.project]['samples'].keys()
+	return pattern
 
-	return expand(pattern, person=wildcards.person, project=wildcards.project, sample=samples)
+def get_mapping_out(wildcards):
+	pattern = get_lib_type(wildcards)
 
+	file_in = expand(pattern, **wildcards)
+
+	return {'mapped': file_in, 'mapped_index': [f + '.bai' for f in file_in]}
+
+def get_fc_in(wildcards):
+	pattern = get_lib_type(wildcards)
+
+	sample = config['raw_data'][wildcards.person][wildcards.project]['samples'].keys()
+
+	return expand(pattern, sample=sample, **wildcards)
+	
 rule all:
 	input:
 		get_out('michela', 'm6a', fastqc_out),
@@ -73,7 +92,10 @@ rule all:
 		get_out('michela', 'm6a', find_circ2_out),
 		get_out('mor_osnat', 'synaptosomes', find_circ2_out),
 		get_out('mor_osnat', 'synaptosomes', fc_out),
-		get_out('nagarjuna', 'rfp', fc_out)
+		get_out('nagarjuna', 'rfp', fc_out),
+		get_out('michela', 'm6a', normalised_bigwig_out, strand = ['forward', 'reverse']),
+		get_out('mor_osnat', 'synaptosomes', normalised_bigwig_out, strand = ['forward', 'reverse']),
+		get_out('nagarjuna', 'rfp', normalised_bigwig_out, strand = ['forward', 'reverse'])
 
 rule create_read_symlinks:
 	output:
@@ -112,17 +134,6 @@ rule index_bam_file:
 	shell:
 		"samtools index {input}"
 
-# rule get_read_length_dist:
-# 	input:
-# 		'{file}.bam'
-# 	output:
-# 		'{file}' + read_dist_suffix
-# 	shell:
-# 		 """
-# 		 mkdir -p {filtered_out_path}
-# 		 samtools view {input} | awk \'{{print(length($10))}}\' | sort | uniq -c > {output}
-# 		 """
-
 rule run_esat:
 	input:
 		annotation= rules.create_gene_2_transcript_file.output,
@@ -139,20 +150,6 @@ rule run_esat:
 			-geneMapping {input.annotation} \
 			-out {params.out_prefix} \
 			-task score3p
-		"""
- 
-rule create_normalised_bigwig:
-	input:
-		mapped_reads=star_out,
-		index=indexed_bam_out
-	output:
-		'data/bigwig/normalised/{sample}.{strand}.bw'
-	shell:
-		"""
-		bamCoverage --bam {input.mapped_reads} -o {output} \
-			--normalizeUsing RPKM \
-			--binSize 5 \
-			--filterRNAstrand {wildcards.strand} 
 		"""
 
 rule map_with_bwa_mem:
@@ -186,7 +183,7 @@ rule find_circ2:
 
 rule count_features:
 	input:
-		get_fc_in_pattern
+		get_fc_in
 	output:
 		fc_out		
 	params:
@@ -194,3 +191,16 @@ rule count_features:
 	threads: 16
 	script:
 		'shared/code/R/featureCounts.R'
+ 
+rule create_normalised_bigwig:
+	input:
+		unpack(get_mapping_out)
+	output:
+		normalised_bigwig_out
+	shell:
+		"""
+		bamCoverage --bam {input.mapped} -o {output} \
+			--normalizeUsing RPKM \
+			--binSize 5 \
+			--filterRNAstrand {wildcards.strand} 
+		"""
