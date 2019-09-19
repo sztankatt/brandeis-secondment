@@ -22,3 +22,5 @@ shared/*
 
 # ignore all html files, as they are generated dynamically
 *.html
+
+*.sqlite

@@ -32,8 +32,12 @@ library(GGally)
 library(DESeq2)
 library(tximport)
 library(kableExtra)
-library(metaseqR)
 library(topGO)
+library(ciRcus)
+library(doMC)
+library(ggrepel)
+
+registerDoMC(32)
 ```
 
 ```{r load_functions, echo = F, cache = F}
@@ -50,6 +54,7 @@ theme_update(plot.title = element_text(hjust = 0),
 michela_m6a_root <- paste0(root_dir, 'michela/m6a/')
 
 options(knitr.table.format = "markdown")
+theme_set(theme_cowplot(12))
 ```
 
 ```{r get_gene_name_id_map, echo = F}
@@ -104,26 +109,36 @@ gene_features <- ensembl %>%
 						 '5_utr_end',
 						 '3_utr_start',
 						 '3_utr_end',
-						 'cds_length'),
+						 'cds_length',
+						 'ensembl_exon_id'),
 		  mart = .) %>%
 	as_tibble %>%
 	dplyr::rename(gene_id = ensembl_gene_id)
 
-colnames(gene_features) <- c('gene_id', 'tx_id','strand', 'tx_start', 'tx_end', 'fivep_start', 'fivep_end', 'threep_start', 'threep_end', 'cds_length')
+colnames(gene_features) <- c('gene_id', 'tx_id','strand', 'tx_start', 'tx_end',
+							 'fivep_start', 'fivep_end', 'threep_start', 'threep_end', 'cds_length', 
+							 'exon_id')
 
 tx2gene <- txs %>%
 	dplyr::select(gene_name, gene_id, tx_id)
+
+
+tx_feature_lengths <- gene_features %>%
+	group_by(tx_id) %>%
+	summarise(threep = sum(threep_end - threep_start, na.rm = T),
+			  fivep = sum(fivep_end - fivep_start, na.rm = T),
+			  cds = max(cds_length, na.rm = T))
 ```
 
 ```{r load_sample_specification, echo = F}
-config = read_yaml(paste0(michela_m6a_root, 'config.yaml'))
-samples <- config$samples %>% names
+config = read_yaml(paste0(root_dir, 'config.yaml'))
+m6a_samples <- config$raw_data$michela$m6a$samples %>% names
 ```
 
 ```{r parse_star_logfiles, echo = F}
-star_log <- samples %>%
+star_log <- m6a_samples %>%
 	ldply(function(sample){
-		readStarLog(paste0(michela_m6a_root,'data/mapping/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
+		readStarLog(paste0(michela_m6a_root,'data/mapping/star/', sample, '.Log.final.out')) %>% data.frame(sample = sample)
 	}) %>%
 	as_tibble %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
@@ -142,7 +157,7 @@ The if we plot the counts and tpm-s (transcript per million) on a log-x scale, w
 
 ```{r import_esat_counts, echo = F}
 esat_dir = paste0(michela_m6a_root, 'data/esat/')
-esat_counts <- samples %>%
+esat_counts <- m6a_samples %>%
 	# create a dataframe out of counts
 	data.frame(sample = .) %>%
 	# create a filename column, and load dataframes as a list
@@ -159,7 +174,7 @@ esat_counts <- samples %>%
 	# fill non detected genes in each sample with zeros
 	spread(sample, count, fill = 0) %>%
 	# gather back
-	gather('sample', 'count', samples) %>%
+	gather('sample', 'count', m6a_samples) %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
 	inner_join(genes, by = 'gene_id') %>%
 	# we need to group before tmp counting...
@@ -193,7 +208,7 @@ esat_counts %>%
 ### PCA analysis
 
 ```{r create_dds_from_counts, echo = F}
-sample_metadata <- tibble(sample = samples) %>%
+sample_metadata <- tibble(sample = m6a_samples) %>%
 	separate(sample, into = c('condition', 'replicate'), extra = 'drop') %>%
 	unite('sample', condition, replicate, remove =F) %>%
 	mutate(condition = factor(condition, levels = c('input', 'igg', 'ip')),
@@ -719,34 +734,13 @@ candidates_ip_diff %>%
 Here in total there are `r nrow(filter(candidates_ip_diff, sig == T))`/`r nrow(filter(candidates_ip_diff, sig ==F))` genes which have mean TPM of at least 10, and average enrichment of at least 4.
 
 
-#### Comparing enrichment ip vs igg
-
-```{r plot_igg_vs_ip_enrichment, echo = F}
-pl_in <- enrichment_diff %>%
-	left_join(ip_vs_input.resLFC, by='gene_name') %>%
-	mutate(sig = log2FoldChange > 1 & padj < 0.05)
-
-pl_in %>%
-	ggplot(aes(median_ip_enrichment, median_igg_enrichment, color = sig)) +
-		geom_point(size = 0.7, alpha = 0.5) +
-		geom_segment(x = 1, y = 0, xend = 4, yend = 3, linetype = 'dashed', color = 'red') +
-		scale_y_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
-		scale_x_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
-		scale_color_manual(values = c('black', 'red')) +
-		coord_fixed() +
-		expand_limits(x = 0, y = 0) +
-		theme(legend.position = 'none') +
-		labs(x = 'median(m6A/input)', y = 'median(igg/input)') +
-		ggtitle('ip vs igg enrichment', 'ip vs input DE genes with p < 0.05 in red')
-```
-
 
 ```{r get_genome_and_gtf, echo = F}
 library(BSgenome)
 library(GenomicFeatures)
 
-txdb <- makeTxDbFromGFF(paste0(root_dir, 'shared/annotations/dm6.gtf'))
-dm6_genome <- readDNAStringSet(paste0(root_dir, 'shared/genomes/dm6.fa')) 
+txdb <- makeTxDbFromGFF(config$knowledge$annotations$dm6)
+dm6_genome <- readDNAStringSet(config$knowledge$genomes$dm6) 
 
 # rename the chr names, as in the original dm6.fasta they have have some stuff appended after 2L, etc
 names(dm6_genome) <- names(dm6_genome) %>%
@@ -760,7 +754,7 @@ gene_exons <- exonsBy(txdb, by = 'gene') %>%
 	# get the data to tibble
 	as_tibble %>%
 	# filter for only cannonical chromosomes
-	filter(seqnames %in% c('3R', '2R', '3L', '2L', 'X', 'Y', '4')) %>%
+	filter(seqnames %in% c('chr3R', 'chr2R', 'chr3L', 'chr2L', 'chrX', 'chrY', 'chr4')) %>%
 	makeGRangesListFromDataFrame(split.field = 'group_name')
 
 tx_exons <- exonsBy(txdb, by ='tx', use.names = T) %>%
@@ -768,8 +762,12 @@ tx_exons <- exonsBy(txdb, by ='tx', use.names = T) %>%
 	# get the data to tibble
 	as_tibble %>%
 	# filter for only cannonical chromosomes
-	filter(seqnames %in% c('3R', '2R', '3L', '2L', 'X', 'Y', '4')) %>%
+	filter(seqnames %in% c('chr3R', 'chr2R', 'chr3L', 'chr2L', 'chrX', 'chrY', 'chr4')) %>%
 	makeGRangesListFromDataFrame(split.field = 'group_name')
+
+tx_cds <- cdsBy(txdb, by='tx', use.names = T)
+tx_threep <- threeUTRsByTranscript(txdb, use.names = T)
+tx_fivep <- fiveUTRsByTranscript(txdb, use.names = T)
 ```
 
 ```{r get_sequences, echo = F}
@@ -822,7 +820,7 @@ m6a_candidate_table <- m6a_candidate_median_ip_tpm %>%
 
 m6a_candidate_table %>%
 	arrange(desc(median_ip_tpm)) %>%
-	write_excel_csv(paste0(michela_m6a_root, 'data/candidates/m6a_candidate_expression.csv'))
+	write_excel_csv(paste0(michela_m6a_root, 'data/m6a_candidate_expression.csv'))
 ```
 
 ```{r get_m6a_candidate_sequences, echo = F}
@@ -831,7 +829,7 @@ m6a_candidate_ids <- genes %>%
 	gene_id
 
 # select rest of genes depending on their tpm in the input 
-rest_ids <- enrichment_data %>%
+abundant_non_target_ids <- enrichment_data %>%
 	# select sequences which are not candidates
 	filter(!(gene_name %in% m6a_candidate_table$gene_name),
 		   gene_id %in% names(gene_sequences),
@@ -846,10 +844,17 @@ rest_ids <- enrichment_data %>%
 
 # we don't need this, as we compare candidates to rest...
 m6a_candidate_seq <- gene_sequences[m6a_candidate_ids]
-m6a_candidate_tx_seq <- tx_sequences[filter(tx2gene, gene_id %in% m6a_candidate_ids) %$% tx_id]
 
-rest_seq <- gene_sequences[rest_ids]
+abundant_non_target_seq <- gene_sequences[abundant_non_target_ids]
 
+sequence_width_limit <- 2000
+
+### we filter candidate sequences to have similar dist between candidates and control
+m6a_candidate_short_seq <- m6a_candidate_seq[width(m6a_candidate_seq) < sequence_width_limit]
+m6a_candidate_short_ids <- names(m6a_candidate_short_seq)
+```
+
+```{r create_control_seqs, echo = F}
 get_windowed_sequences <- function(seqs, q_seq_len, w_size){
 	w_min <- q_seq_len - w_size
 	w_max <- q_seq_len + w_size
@@ -857,94 +862,228 @@ get_windowed_sequences <- function(seqs, q_seq_len, w_size){
 }
 
 # get control sequences which are comparable to candidates in size
-get_control_seq <- function(m6a_candidate_seq, rest_seq, sample_size_mult){
-	m6a_candidate_seq %>%
-		llply(function(sq){
+# its a semi random approach, where first we identify sequences in an increased window, at least twice as many as a 
+	# multiplication factor. Then we chooce as many sequences as high is the multiplication factor. 
+get_control_seq <- function(m6a_candidate_seq, reference_seq, sample_size_mult, number_of_iterations = 1){
+	# set an iterator for bootstrapping
+	iterations <- seq(1, number_of_iterations, 1)
+	
+	iterations %>% llply(function(iterator){
+		m6a_candidate_seq %>% llply(function(sq){
 			len <- length(sq)
 			
 			window_size <- 10
-			windowed_seqs <- get_windowed_sequences(rest_seq, len, window_size)
+			windowed_seqs <- get_windowed_sequences(reference_seq, len, window_size)
 
-			while(length(windowed_seqs) < sample_size_mult *2){
+			while(length(windowed_seqs) < sample_size_mult*2){
 				window_size <- window_size * 10
-				windowed_seqs <- get_windowed_sequences(rest_seq, len, window_size)
+				windowed_seqs <- get_windowed_sequences(reference_seq, len, window_size)
 			}
-
-			out_seq <- windowed_seqs %>%
-				sample(sample_size_mult)
 			
-			out_seq
+			sample(windowed_seqs, sample_size_mult)
 		}) %>%
 		unname() %>%
 		do.call(c, .) %>%
 		unique
+   }) %>% Reduce(intersect, .)
 }
 
-# select control genes, one per candidate, with rouglhy the same length, by random
-control_seq <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 1)
-control_seq_2 <- get_control_seq(m6a_candidate_seq, rest_seq, sample_size_mult = 2)
-control_tx_seq <- tx_sequences[filter(tx2gene, gene_id %in% names(control_seq)) %$% tx_id]
-control_tx_2_seq <- tx_sequences[filter(tx2gene, gene_id %in% names(control_seq_2)) %$% tx_id]
+# get control sequences which are comparable to candidates in size
+get_control_seq2 <- function(m6a_candidate_seq, reference_seq, sample_size_mult){
+	m6a_candidate_seq %>%
+	llply(function(sq){
+		len <- length(sq)
+		
+		selected_windowed_seq_names <- reference_seq %>%
+			# create a tibble with only the names and gene widths
+			{ tibble(width = width(.), names = names(.))} %>%
+			# subtract the length of candidate from the widths of controls
+			mutate(width = abs(width - len)) %>%
+			# select the closest controls
+			top_n(-1*sample_size_mult, width) %$%
+			names
+		
+		reference_seq[selected_windowed_seq_names]
+	}) %>%
+	unname() %>%
+	do.call(c, .) %>%
+	unique
+}
+
+#control_seq <- get_control_seq2(m6a_candidate_seq, abundant_non_target_seq, 1.5)
+control_seq <- get_control_seq(m6a_candidate_seq, abundant_non_target_seq, sample_size_mult = 4, number_of_iterations = 5)
+control_ids <- names(control_seq)
+
+control_short_seq <- get_control_seq2(m6a_candidate_short_seq, abundant_non_target_seq, 1)
+control_short_ids <- names(control_short_seq) 
+
+rest_ids <- enrichment_data %$%
+	gene_id %>%
+	unique %>%
+	setdiff(m6a_candidate_ids) %>%
+	setdiff(names(control_seq)) %>%
+	setdiff(abundant_non_target_ids)
+
+# filter out only genes which are in the sequences file
+rest_ids <- rest_ids[rest_ids %in% names(gene_sequences)]
+
+rest_seq <- gene_sequences[rest_ids]
+
+detected_seq <- c(m6a_candidate_seq, control_seq, abundant_non_target_seq, rest_seq) %>%
+	unique
 ```
 
-```{r save_sequences, echo = F}
-writeXStringSet(m6a_candidate_seq,
-				paste0(michela_m6a_root, 'data/candidates/candidates.fa'))
+```{r update_tx2gene, echo = F}
+# we update the tx2gene table with a type column which specifies if a sequence is a candidate or control
+tx2gene <- tx2gene %>%
+	mutate(type = 'rest') %>%
+	mutate(type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', type),
+		   type = ifelse(gene_id %in% names(control_seq), 'control', type))
+```
 
-writeXStringSet(m6a_candidate_tx_seq,
-				paste0(michela_m6a_root, 'data/candidates/candidates_tx.fa'))
+
+#### Comparing enrichment ip vs igg
+
+```{r plot_igg_vs_ip_enrichment, echo = F}
+pl_in <- enrichment_diff %>%
+	left_join(ip_vs_input.resLFC, by='gene_name') %>%
+	inner_join(genes, by='gene_name') %>%
+	mutate(mrna_type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', 'rest'),
+		   mrna_type = ifelse(gene_id %in% names(control_seq), 'control', mrna_type)) %>%
+	arrange(desc(mrna_type))
+
+pl_in %>%
+	ggplot(aes(median_ip_enrichment, median_igg_enrichment, color = mrna_type)) +
+		geom_point(size = 0.7, alpha = 0.5) +
+		geom_segment(x = 1, y = 0, xend = 4, yend = 3, linetype = 'dashed', color = 'red') +
+		scale_y_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
+		scale_x_continuous(breaks = 0:10, limits = c(0,10), expand = c(0,0)) +
+		scale_color_manual(values = c('red', 'green', 'black')) +
+		coord_fixed() +
+		expand_limits(x = 0, y = 0) +
+		theme(legend.position = 'none') +
+		labs(x = 'median(m6A/input)', y = 'median(igg/input)') +
+		ggtitle('m6A vs Igg enrichment', 'candidate sequences in red, control sequences in green')
+
+ggsave('figures/tmp.png')
+```
+
+```{r save_sequences, echo = F, eval = F}
+m6a_candidate_seq_root <- paste0(michela_m6a_root, 'data/sequences/candidates/all/')
+
+writeXStringSet(m6a_candidate_seq,
+			paste0(m6a_candidate_seq_root, 'm6a_candidates.fa'))
 
 writeXStringSet(control_seq,
-				paste0(michela_m6a_root, 'data/candidates/control_seqs.fa'))
+			paste0(m6a_candidate_seq_root, 'control_seqs.fa'))
 
-writeXStringSet(control_tx_seq,
-				paste0(michela_m6a_root, 'data/candidates/control_seqs_tx.fa'))
+# write transcript sequences
+tx_ids <- tx2gene %>%
+	filter(tx_id %in% names(tx_sequences)) %>%
+	dplyr::select(tx_id, type)
 
-writeXStringSet(control_tx_seq,
-				paste0(michela_m6a_root, 'data/candidates/control_seqs_2_tx.fa'))
+writeXStringSet(tx_sequences[tx_ids %>% filter(type == 'candidate') %$% tx_id],
+				paste0(m6a_candidate_seq_root, 'm6a_candidates_tx.fa'))
 
-writeXStringSet(rest_seq,
-				paste0(michela_m6a_root, 'data/candidates/rest_seqs.fa'))
+writeXStringSet(tx_sequences[tx_ids %>% filter(type == 'control') %$% tx_id],
+				paste0(m6a_candidate_seq_root, 'm6a_control_tx.fa'))
+
+
+```{r save_tx_sequences, echo = F}
+# First we need to save all transcript sequences into a single fasta file
+# These transcripts will be then shuffled, to identify possible targets and candidates.
+
+mrna_tx_ids <- genes %>%
+	filter(gene_biotype == 'protein_coding') %$%
+	gene_id
+
+mrna_tx_ids <- tx2gene %>%
+	filter(tx_id %in% names(tx_sequences)) %>%
+	filter(gene_id %in% mrna_tx_ids) %$%
+	tx_id
+
+mrna_all_tx_seq <- tx_sequences[mrna_tx_ids]
+
+tx_file = paste0(michela_m6a_root, 'data/sequences/shuffled/transcripts.fa')
+
+if(!file.exists(tx_file)){
+	writeXStringSet(mrna_all_tx_seq, tx_file)
+}
 ```
+
 
 ### Candidate motif analysis
 
 Next, in order to identify motifs _de-novo_ we used DREME. The input was our candidate sequences (on the gene level) vs a set of control sequences. The control sequences were selected semi-random from the set of not-methylated genes: we choose the control sequences to have similar length distribution as our input sequences.
 
-```{r read_motif_result, echo = F}
-source(paste0(root_dir, 'shared/code/R/parseFimoOut.R'))
-a <- 1
-m6a_candidate_motif_coverage <- paste0(michela_m6a_root, 'data/candidates/fimo_candidates/fimo.tsv') %>%
-	parseFimoOut(gene_features, tx2gene, nbins = 15)
+```{r plot_length_dist, echo = F}
+length_dist_data <- tibble(sequence_type = 'rest', width = detected_seq %>% width, gene_id = detected_seq %>% names) %>%
+	mutate(sequence_type = ifelse(gene_id %in% abundant_non_target_ids, 'abundant_non_target', sequence_type),
+		   sequence_type = ifelse(gene_id %in% names(control_seq), 'control', sequence_type),
+		   sequence_type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', sequence_type))
 
-m6a_control_motif_coverage <- paste0(michela_m6a_root, 'data/candidates/fimo_control/fimo.tsv') %>%
-	parseFimoOut(gene_features, tx2gene, nbins = 15)
+length_dist_data %>%
+	filter(width < 6000) %>%
+	ggplot(aes(width, color = sequence_type)) +
+		geom_vline(xintercept = 5000, linetype = 2, color = 'grey')+
+		geom_vline(xintercept = 1500, linetype = 2, color = 'grey')+
+		geom_vline(xintercept = 2000, linetype = 2, color = 'grey')+
+		geom_density() +
+		labs(x = 'length (nt)', color = '') +
+		ggtitle('Candidate sequences are longer') +
+		scale_x_continuous(breaks = seq(0, 10000, 1000)) 
+
+ggsave('figures/tmp.png')
+```
+
+```{r read_motif_result, echo = F, cache = F}
+theme_set(theme_cowplot(12))
+source(paste0(root_dir, 'shared/code/R/parseFimoOut.R'))
+
+tx_motif_coverage <- paste0(michela_m6a_root, 'data/fimo_out/all/transcripts.tsv') %>%
+	read_table2(col_names = c('motif_id',
+							  'motif_alt_id',
+							  'tx_id',
+							  'start',
+							  'stop',
+							  'strand',
+							  'score',
+							  'p_value',
+							  'mathed_sequence'), skip = 1) %>%
+	parseFimoOut(tx_feature_lengths, tx2gene, nbins = 15)
+
+# there are some cases when the ncbi and ensembl annotations are not the same, in these cases we might get an 
+# overhang in the 5', in which case there will be one more bin. currently this is only conserning 9 genes, so and even then 
+# the actual position of the motif (ie cds, 3' utr or 5' utr is not affected). So we just replace 15.5 with 14.5 manually here
+tx_motif_coverage <- tx_motif_coverage %>%
+	mutate(bin = ifelse(bin == 15.5, 14.5, bin))
 ```
 
 ```{r plot_motif_coverage, fig.width = 10, fig.height = 5, echo = F}
 plot_all_motif_coverage <- function(motif_coverage){
 	motif_coverage %>%
-	ggplot(aes(start, fill = motif_id)) +
-		geom_histogram(aes(y=..count../sum(..count..)),binwidth = 0.1,boundary = 0,  closed = 'left', color = 'black') +
-		scale_x_continuous(labels = c('5\'', 'CDS Start', 'CDS End', '3\'')) +
-		scale_y_continuous(breaks = c(0.0, 0.01, 0.02)) +
-		geom_vline(xintercept = 1, linetype = 'dashed') +
-		geom_vline(xintercept = 0, linetype = 'dashed') +
-		scale_fill_manual(values=wes_palette(n=5, name="Zissou1")) +
-		facet_grid(motif_id~type) +
-		labs(x='') +
-		ggtitle('Coverage of top5 differential motifs in m6a candidates') +
-		theme(strip.text.y = element_blank())
+		group_by(motif_id, bin, type) %>%
+		summarise(count = n()) %>%
+		ungroup() %>%
+		group_by(motif_id) %>%
+		mutate(dens = count / sum(count)) %>%
+		ggplot(aes(bin, dens, fill = motif_id)) +
+			geom_bar(stat = 'identity') +
+			scale_x_continuous(breaks = c(0, 5, 10, 15), labels = c('5\'', 'CDS Start', 'CDS End', '3\'')) +
+			geom_vline(xintercept = 5, linetype = 'dashed') +
+			geom_vline(xintercept = 10, linetype = 'dashed') +
+			scale_fill_manual(values=wes_palette(n=5, name="Zissou1")) +
+			facet_grid(motif_id~type) +
+			labs(x='', y = 'density') +
+			ggtitle('Coverage of top5 differential motifs in m6a candidates') +
+			theme(strip.text.y = element_blank())
 }
 
-m6a_candidate_motif_coverage$type = 'candidate'
-m6a_control_motif_coverage$type = 'control'
-
-all_motif_coverage <- bind_rows(m6a_candidate_motif_coverage,
-								m6a_control_motif_coverage)
-
-all_motif_coverage %>%
+tx_motif_coverage %>%
+	filter(type != 'rest') %>%
 	plot_all_motif_coverage
+
+ggsave('figures/tmp.png', width = 10, height = 5)
 ```
 
 ```{r define_motif_coverage_function, echo = F}
@@ -965,66 +1104,75 @@ coverage_plot <- function(m6a_candidate_motif_coverage, gene_names){
 		labs(x = '')
 }
 
-m6a_motif_count <- m6a_candidate_motif_coverage %>%
-	group_by(gene_name, feature_type) %>%
+tx_motif_counts <- tx_motif_coverage %>%
+	group_by(tx_id, feature_type) %>%
 	summarise(count = n()) %>%
-	spread(feature_type, count, fill = 0)
+	spread(feature_type, count, fill = 0) %>%
+	inner_join(tx2gene, by = 'tx_id')
 ```
 
 ```{r plot_genes_with_many_motifs, echo = F, fig.width = 10, fig.height = 7.5, eval = F}
-m6a_motif_count %>% 
-	filter(cds + threep + fivep >= 40) %$%
+tx_motif_counts %>% 
+	filter(type == 'candidate',
+		   cds + threep + fivep >= 40) %$%
 	gene_name %>%
-	coverage_plot(m6a_candidate_motif_coverage, .) +
+	coverage_plot(tx_motif_coverage, .) +
 		ggtitle('Genes with at least 40 total motifs')
 
+ggsave('figures/tmp.png')
 ```
 
 ```{r plot_genes_with_3p_motif, echo = F, fig.width = 10, fig.height = 4.5}
 # get genes which are only int the 3p
-m6a_3p_candidates <- m6a_motif_count %>% 
-	filter(cds + fivep + threep > 10) %>%
+m6a_3p_candidates <- tx_motif_counts %>% 
+	filter(type == 'candidate',
+		   cds + fivep + threep > 10) %>%
 	filter((cds < 10& fivep < 10 & threep - 10 > cds & threep - 10 > fivep) |
 		   ( threep/cds > 3 & threep/fivep > 3)) %$%
 	gene_name
 
 m6a_3p_candidates %>%
 	sample(12) %>%
-	coverage_plot(m6a_candidate_motif_coverage, .) +
+	coverage_plot(tx_motif_coverage, .) +
 		ggtitle('Example genes with most motifs in 3\' UTR')
+
+ggsave('figures/tmp.png')
 ```
 
 ```{r plot_genes_with_5p_motif, echo = F, fig.width = 10, fig.height = 4.5}
-m6a_5p_candidates <- m6a_motif_count %>% 
-	filter(cds + fivep + threep > 10) %>%
+m6a_5p_candidates <- tx_motif_counts %>% 
+	filter(type == 'candidate',
+		   cds + fivep + threep > 10) %>%
 	filter((cds < 10 & threep < 10 & fivep - 10 > cds & fivep - 10 > threep) |
 		   (fivep/cds > 3 & fivep/threep > 3)) %$%
 	gene_name
 
 m6a_5p_candidates %>%
-	coverage_plot(m6a_candidate_motif_coverage, .) +
+	coverage_plot(tx_motif_coverage, .) +
 		ggtitle('Genes with most motifs in 5\' UTR')
 ```
 
 ```{r plot_genes_with_cds_motif, echo = F, fig.width = 10, fig.height = 4.5}
-m6a_cds_candidates <- m6a_motif_count %>% 
-	filter(cds + fivep + threep > 10) %>%
+m6a_cds_candidates <- tx_motif_counts %>% 
+	filter(type == 'candidate',
+		   cds + fivep + threep > 10) %>%
 	filter((fivep < 10 & threep < 10 & cds > 10)|
 		   (cds/fivep > 3 & cds/threep > 3)) %$%
 	gene_name
 
 m6a_cds_candidates %>%
-	coverage_plot(m6a_candidate_motif_coverage, .) +
+	coverage_plot(tx_motif_coverage, .) +
 		ggtitle('Genes with most motifs in CDS')
 ```
 
 ```{r plot_genes_with_motif_in_both_utrs, echo = F, fig.width = 10, fig.height = 4.5, eval = F}
-m6a_motif_count %>% 
-	filter(cds + fivep + threep > 10) %>%
+tx_motif_counts %>% 
+	filter(type == 'candidate',
+		   cds + fivep + threep > 10) %>%
 	filter((fivep - 10 > cds & threep - 10 > cds & cds < 10)|
 		   (fivep/cds > 3 & threep/cds > 3)) %$%
 	gene_name %>%
-	coverage_plot(m6a_candidate_motif_coverage, .) +
+	coverage_plot(tx_motif_coverage, .) +
 		ggtitle('Genes with most motifs in CDS')
 ```
 
@@ -1037,11 +1185,11 @@ gene2met <- esat_counts %>%
 gene2met$m6a_type = 'normal'
 
 gene2met <- gene2met %>%
-	mutate(m6a_type = ifelse(gene_id %in% m6a_candidate_ids, 'neg', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_5p_candidates, '5\'', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_3p_candidates, '3\'', m6a_type),
-		   m6a_type = ifelse(gene_name %in% m6a_cds_candidates, 'CDS', m6a_type),
-		   m6a_type = ifelse(gene_id %in% names(control_seq), 'control', m6a_type))
+mutate(m6a_type = ifelse(gene_id %in% m6a_candidate_ids, 'rest', m6a_type),
+	   m6a_type = ifelse(gene_name %in% m6a_5p_candidates, '5\'', m6a_type),
+	   m6a_type = ifelse(gene_name %in% m6a_3p_candidates, '3\'', m6a_type),
+	   m6a_type = ifelse(gene_name %in% m6a_cds_candidates, 'CDS', m6a_type),
+	   m6a_type = ifelse(gene_id %in% names(control_seq), 'control', m6a_type))
 ```
 
 #### Feature distribution of candidates
@@ -1068,10 +1216,10 @@ gene_feature_lengths %>%
 		theme(legend.position = 'bottom') +
 		labs(x ='', y = 'mean(length)', color = 'methylation type')
 ```
-
+<!--
 ### GO analysis of candidates
-
-```{r get_enriched_go_terms, echo = F}
+-->
+```{r get_enriched_go_terms, echo = F, eval = F}
 m6a_go <- esat_counts %>%
 	filter(condition == 'input',
 		   count > 4) %>%
@@ -1087,10 +1235,10 @@ m6a_go_res <- m6a_go %>%
 	runTest(statistic='fisher') %>%
 	GenTable(m6a_go, classicFisher =.)
 ```
-
+<!--
 First we looked at enriched GO terms in candidates vs rest of detected mRNAs.
-
-```{r plot_candidate_vs_rest_go, echo = F}
+-->
+```{r plot_candidate_vs_rest_go, echo = F, eval = F}
 m6a_go_res %>%
 	mutate(pval = as.numeric(classicFisher),
 		   foldChange = Significant / Expected) %>%
@@ -1113,8 +1261,8 @@ m6a_go_res %>%
 ### Look at circles in polyA data
 
 ```{r load_m6a_find_circ_data, echo = F, include = F}
-txdb <- makeTxDbFromGFF(paste0(root_dir, 'shared/annotations/dm6.gtf'))
-annot.file = paste0(root_dir, "shared/annotations/dm6.sqlite")
+txdb <- makeTxDbFromGFF(config$knowledge$annotations$dm6)
+annot.file = paste0(root_dir, "dm6.sqlite")
 
 saveDb(txdb, file = annot.file)
 
@@ -1122,11 +1270,11 @@ annot.list = loadAnnotation(annot.file)
 
 data.path = paste0(michela_m6a_root, 'data/mapping/circrna/')
 
-circ_experiment_paths = llply(samples,function(x){
-  paste0(data.path, '/', x, '/find_circ_run/circ_splice_sites.bed')
+circ_experiment_paths = llply(m6a_samples,function(x){
+paste0(data.path, '/', x, '/find_circ_run/circ_splice_sites.bed')
 })
 
-cdata = data.frame(sample = samples, filename = circ_experiment_paths %>% unlist)
+cdata = data.frame(sample = m6a_samples, filename = circ_experiment_paths %>% unlist)
 
 ### workaround as SummarizedExperiment currently gives some weird error. This trick does it
 rownames(cdata) <- cdata$sample
@@ -1143,43 +1291,43 @@ circs.se <- annotateCircs(circs.se, annot.list = annot.list) %>% circLinRatio
 circs_tb <- circs.se %>% resTable %>% as.tibble
 
 circs_tb <- circs_tb %>%
-	gather('observation', 'value', ip_1_circ:input_3_ratio) %>%
-	separate(observation, into = c('condition', 'replicate', 'observation'), sep= '[_]') %>%
-	inner_join(genes %>% dplyr::select(gene_name, gene_id), by = 'gene_id')
+gather('observation', 'value', ip_1_circ:input_3_ratio) %>%
+separate(observation, into = c('condition', 'replicate', 'observation'), sep= '[_]') %>%
+inner_join(genes %>% dplyr::select(gene_name, gene_id), by = 'gene_id')
 
 circs_counts <- circs_tb %>%
-	filter(width > 50, observation == 'circ') %>%
-	group_by(condition, replicate, gene_name, gene_id) %>%
-	summarise(value = sum(value))	
+filter(width > 50, observation == 'circ') %>%
+group_by(condition, replicate, gene_name, gene_id) %>%
+summarise(value = sum(value))	
 
 circs_abundances <- circs_counts %>%
-	group_by(condition, replicate) %>%
-	mutate(value = value / sum(value) * 1e2)
+group_by(condition, replicate) %>%
+mutate(value = value / sum(value) * 1e2)
 
 # show circles
 to_join_1 <- circs_counts %>%
-	unite('sample', condition, replicate) %>%
-	spread(sample, value)
-	
+unite('sample', condition, replicate) %>%
+spread(sample, value)
+
 to_join_2 <- circs_abundances %>%
-	unite('sample', condition, replicate) %>%
-	spread(sample, value)
+unite('sample', condition, replicate) %>%
+spread(sample, value)
 
 polya_circs_table <- inner_join(to_join_1, to_join_2, by = c('gene_id', 'gene_name'), suffix = c('.count', '.norm_abundance'))
 
-write_excel_csv(polya_circs_table, paste0(michela_m6a_root, 'data/candidates/polya_circs_table.csv'))
+write_excel_csv(polya_circs_table, paste0(michela_m6a_root, 'data/polya_circs_table.csv'))
 ```
 
 ```{r plot_circles_which_are_present_in_polya, echo = F}
 circs_abundances %>%
-	dplyr::rename(abundance = value) %>%
-	ggplot(aes(condition, abundance, fill = condition)) +
-		geom_violin() +
-		geom_point(position = 'jitter') +
-		scale_y_continuous(trans = 'log2') +
-		scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
-		ggtitle('circRNAs detected in PolyA data',
-				subtitle = 'Counts across the BS junction')
+dplyr::rename(abundance = value) %>%
+ggplot(aes(condition, abundance, fill = condition)) +
+	geom_violin() +
+	geom_point(position = 'jitter') +
+	scale_y_continuous(trans = 'log2') +
+	scale_fill_manual(values=wes_palette(n=3, name="GrandBudapest1")) +
+	ggtitle('circRNAs detected in PolyA data',
+			subtitle = 'Counts across the BS junction')
 ```
 
 ```{r read_fc_output, echo = F}
@@ -1188,38 +1336,38 @@ rfp_fc <- readRDS(paste0(root_dir, 'nagarjuna/rfp/data/counts/feature_counts.rds
 colnames(rfp_fc$counts) <- c('ld_1', 'ld_2', 'hd_1', 'hd_2')
 
 rfp_counts <- rfp_fc$counts %>%
-	as.data.frame
+as.data.frame
 
 rfp_counts <- rfp_counts %>%
-	rownames_to_column(var = 'gene_id') %>%
-	as_tibble %>%
-	separate(gene_id, into = c('gene_id'), extra = 'drop')
+rownames_to_column(var = 'gene_id') %>%
+as_tibble %>%
+separate(gene_id, into = c('gene_id'), extra = 'drop')
 
 # get gene names from the counts which are not in biomart genes
 n <- rfp_counts %>%
-	filter(!(gene_id %in% genes$gene_id)) %$%
-	gene_id
+filter(!(gene_id %in% genes$gene_id)) %$%
+gene_id
 
 # we can get these names and convert them to their current symbols using: https://flybase.org/convert/id
 # the output is saved to FlyBase_IDs.txt
 
 # get only ones which really changed
 convert_ids <- read_table2('../../../../FlyBase_IDs.txt')%>%
-	filter(submitted_id != current_id) %>%
-	dplyr::rename(gene_id = submitted_id) %>%
-	dplyr::select(gene_id, converted_id)
+filter(submitted_id != current_id) %>%
+dplyr::rename(gene_id = submitted_id) %>%
+dplyr::select(gene_id, converted_id)
 
 # update the gene_ids
 rfp_counts <- rfp_counts %>%
-	left_join(convert_ids, by = 'gene_id') %>%
-	# if convert id exists
-	mutate(gene_id = ifelse(is.na(converted_id), gene_id, converted_id)) %>%
-	dplyr::select(-converted_id)
+left_join(convert_ids, by = 'gene_id') %>%
+# if convert id exists
+mutate(gene_id = ifelse(is.na(converted_id), gene_id, converted_id)) %>%
+dplyr::select(-converted_id)
 
 # use inner join as all the id should be updated by now
 rfp_counts <- rfp_counts %>%
-	inner_join(genes, by = 'gene_id') %>%
-	filter(gene_biotype == 'protein_coding')
+inner_join(genes, by = 'gene_id') %>%
+filter(gene_biotype == 'protein_coding')
 ```
 
 ```{r calculate_fc_tpm, echo = F}
@@ -1234,18 +1382,18 @@ rfp_tpm <- rfp_counts %>%
 
 ```{r create_deseq_rfp, echo = F}
 rfp_metadata <- data.frame(condition = factor(c('ld', 'ld', 'hd', 'hd'), levels = c('ld', 'hd')),
-						   replicate = c(1,2,1,2),
-						   row.names = c('ld_1', 'ld_2', 'hd_1', 'hd_2'))
+					   replicate = c(1,2,1,2),
+					   row.names = c('ld_1', 'ld_2', 'hd_1', 'hd_2'))
 
 dds <- DESeqDataSetFromMatrix(as.matrix(rfp_fc$counts),
-							  colData = rfp_metadata,
-							  design = ~condition)
+						  colData = rfp_metadata,
+						  design = ~condition)
 
 dds <- DESeq(dds) 
 
 res <- results(dds, alpha = 0.01)
 resLFC <- lfcShrink(dds = dds, res = res, coef = 'condition_hd_vs_ld') %>%
-	data.frame %>%
+data.frame %>%
 	rownames_to_column(var = 'gene_id') %>%
 	as_tibble %>%
 	left_join(genes, by = 'gene_id')
@@ -1337,8 +1485,6 @@ abundances <- input_abundances %>%
 		   seq_type = ifelse(gene_id %in% m6a_candidate_ids, 'candidate', 'not candidate'))
 ```
 
-
-
 ```{r plot_translational_efficiency_density, echo = F}
 abundances %>%
 	ggplot(aes(translation_efficiency, fill = seq_type)) +
@@ -1378,7 +1524,9 @@ m6a_mu <- pl_in %>%
 	group_by(m6a_type, observation) %>%
 	summarise(grp.median = median(value))
 
-log_breaks = c(0.001, 0.01, 0.1, 1.0, 10, 100, 1000, 10000)
+	log_breaks = c(0.001, 0.01, 0.1, 1.0, 10, 100, 1000, 10000)
+
+library(ggpubr)
 
 pl_in %>%
 	ggplot(aes(m6a_type, value, color = m6a_type)) +
@@ -1389,63 +1537,311 @@ pl_in %>%
 		facet_wrap(~observation) +
 		theme(legend.position = 'bottom') +
 		labs(x = '', color = 'methylation type') 
+
+ggsave('figures/tmp.png')
 ```
- 
+<!--
 ### Localisation of m6a candidates
 
 Next, we checked if candidate mRNAs localise somewhere in the cell fractionation data. 
 
 ```{r load_cell_fraction_data, echo = F}
 fraction_fc <- readRDS(paste0(root_dir, 'mor_osnat/synaptosomes/data/counts/feature_counts.rds'))
-fraction_counts <- fractions_fc$counts %>%
-	as.data.frame %>%
-	rownames_to_column(var = 'gene_id') %>%
-	as_tibble %>%
-	gather('experiment', 'count', -gene_id) %>%
-	mutate(experiment = sapply(strsplit(experiment, '[.]'), `[`, 14)) %>%
-	inner_join(genes, by ='gene_id') %>%
-	filter(gene_biotype == 'protein_coding')
+fraction_counts <- fraction_fc$counts %>%
+as.data.frame %>%
+rownames_to_column(var = 'gene_id') %>%
+as_tibble %>%
+gather('experiment', 'count', -gene_id) %>%
+mutate(experiment = sapply(strsplit(experiment, '[.]'), `[`, 14)) %>%
+inner_join(genes, by ='gene_id') %>%
+filter(gene_biotype == 'protein_coding')
 ```
 
 ```{r calculate_fraction_tpms, echo = F}
 fraction_tpm <- fraction_counts %>%
-	dplyr::select(gene_id, gene_name, experiment, count, gene_length) %>%
-	group_by(experiment) %>%
-	mutate(tpm = count / gene_length,
-		   tpm = tpm / sum(tpm) * 1e6)
+dplyr::select(gene_id, gene_name, experiment, count, gene_length) %>%
+group_by(experiment) %>%
+mutate(tpm = count / gene_length,
+	   tpm = tpm / sum(tpm) * 1e6)
 ```
 
 Lets look at how does the TPM values change based on different fractions.
 
 ```{r plot_m6a_candidate_localised_expression, echo = F, fig.width = 9, fig.height = 4}
 fraction_tpm %>%
-	separate(experiment, into = c('condition', 'replicate')) %>%
-	group_by(gene_id, gene_name, condition) %>%
-	summarise(mean.tpm = mean(tpm)) %>%
-	inner_join(input_abundances, by = c('gene_id', 'gene_name')) %>%
-	inner_join(gene2met, by = c('gene_id', 'gene_name')) %>%
-	mutate(normalised_tpm = mean.tpm / mnc) %>%
-	filter(m6a_type != 'normal',
-		   condition %in% c('pel1', 'pel2', 'sup2')) %>%
-	mutate(condition = mapvalues(condition, to = c('nuc', 'syn', 'cyt'), from = condition)) %>%
-	ggplot(aes(condition, mean.tpm, color = m6a_type)) +
-		geom_boxplot() +
-		scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000), labels = c(0.1, 1, 10, 100, 1000, 10000)) +
-		facet_wrap(~m6a_type, ncol = 5) +
-		theme(legend.position = 'bottom') +
-		ggtitle('Localisation of m6a candidates in different fractions') +
-		labs(x = '', color = 'methylation type')
+separate(experiment, into = c('condition', 'replicate')) %>%
+group_by(gene_id, gene_name, condition) %>%
+summarise(mean.tpm = mean(tpm)) %>%
+inner_join(input_abundances, by = c('gene_id', 'gene_name')) %>%
+inner_join(gene2met, by = c('gene_id', 'gene_name')) %>%
+mutate(normalised_tpm = mean.tpm / mnc) %>%
+filter(m6a_type != 'normal',
+	   condition %in% c('pel1', 'pel2', 'sup2')) %>%
+mutate(condition = mapvalues(condition, to = c('nuc', 'syn', 'cyt'), from = condition)) %>%
+ggplot(aes(condition, mean.tpm, color = m6a_type)) +
+	geom_boxplot() +
+	scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000), labels = c(0.1, 1, 10, 100, 1000, 10000)) +
+	facet_wrap(~m6a_type, ncol = 5) +
+	theme(legend.position = 'bottom') +
+	ggtitle('Localisation of m6a candidates in different fractions') +
+	labs(x = '', color = 'methylation type')
+```
+-->
+
+### log-odds ranks
+
+```{r load_fimo_results, echo = F}
+shuffled_n <- 200
+
+read_fimo_files <- function(files){
+	ldply(files, function(fimo_file){
+		read_table2(fimo_file) %>%
+			filter(startsWith(sequence_name, 'FBtr')) %>%
+			group_by(sequence_name, motif_id) %>%
+			summarise(motif_freq = n())
+	}, .id = 'run_id', .parallel = TRUE) %>%
+	as_tibble
+}
+
+shuffled_fimo_files <- paste0(root_dir,
+							  'michela/m6a/data/fimo_out/all/shuffled_',
+							  seq(0, shuffled_n - 1, 1), '.tsv')
+
+all_tx_fimo_file <- c('transcripts_0' = '../../../../michela/m6a/data/fimo_out/all/transcripts.tsv')
+
+names(shuffled_fimo_files) <- paste0('shuffled_', seq(0, shuffled_n - 1, 1))
+
+all_fimo_files <- c(shuffled_fimo_files, all_tx_fimo_file)
+
+all_fimo_occurrences <- read_fimo_files(all_fimo_files)
 ```
 
-Look if there is a difference between circ localization of circles whose host genes are methylated. This is probably a long-shot...
+```{r calculate_occurrences, echo = F}
+calculate_fimo_occurrences <- function(fimo_occurrences){
+	fimo_occurrences %>%
+		# run_id for shuffled is shuffled_{n} for normal is transcripts_0 ie only one occurrence
+		separate('run_id', into = c('run_type', 'run_number')) %>%
+		# we group by run type sequence name and motif id, so that we can select the median from the
+		# shuffled sequences
+		group_by(run_type, sequence_name, motif_id) %>%
+		summarise(median_freq = median(motif_freq)) %>%
+		spread(run_type, median_freq, fill = 0) %>%
+		# rename the median_shuffled and transcript frequency rows
+		dplyr::rename(median_shuffled_freq = shuffled,
+					  normal_freq = transcripts)
+}
+
+joint_occurrences <- calculate_fimo_occurrences(all_fimo_occurrences)
+```
+
+```{r calculate_log_odd_ranks, echo = F}
+calculate_log_odds <- function(fimo_occurrences){
+	fimo_occurrences %>%
+	#	group_by(sequence_name) %>%
+	#	summarise(median_shuffled_freq = sum(median_shuffled_freq),
+	#			  normal_freq = sum(normal_freq)) %>%
+		# calculate the probability of seeing a motif not just by chance
+		mutate(p = normal_freq / (normal_freq + median_shuffled_freq)) %>%
+		dplyr::rename(tx_id = sequence_name) %>%
+		# NOTE: here join command removes the transcripts for which no occurrence was found either
+		# in the normal sequence, nor the shuffled one.
+		inner_join(tx2gene, by = 'tx_id') %>%
+		group_by(gene_id, motif_id) %>%
+		summarise(p = sum(p)/n()) %>%
+		mutate(log_odds = log(p/(1-p)))
+}
+
+log_odds <- calculate_log_odds(joint_occurrences)
+
+log_odds$sequence_type = 'rest'
+
+log_odds <- log_odds %>%
+	mutate(sequence_type = ifelse(gene_id %in% names(m6a_candidate_seq), 'candidate', sequence_type),
+		   sequence_type = ifelse(gene_id %in% names(control_seq), 'control', sequence_type))
+```
+
+```{r plot_logodds_density, echo = F}
+log_odds %>%
+	ggplot(aes(log_odds, color = sequence_type)) +
+		geom_density() +
+		facet_wrap(~motif_id, ncol = 2) +
+		ggtitle('Density of log-odds rate of different sequence types', subtitle = 'bootstrapped di-nucleotide shuffles used as background model')
+
+ggsave('figures/tmp.png', height = 7, width = 11)
+```
+
+```{r calc_roc, echo = F, fig.height=7.5, fig.width=7.5}
+calculate_roc <- function(log_odds){
+	log_odds %>%
+		group_by(motif_id) %>%
+		filter(sequence_type != 'rest', sequence_type != 'novel_candidates') %>%
+		arrange(desc(log_odds)) %>%
+		mutate(tp = cumsum(sequence_type == 'candidate'),
+			   fp = cumsum(sequence_type == 'control')) %>%
+		# reverse the log odds to find out the negative rates
+		arrange(log_odds) %>%
+		mutate(tn = cumsum(sequence_type == 'control'),
+			   fn = cumsum(sequence_type == 'candidate')) %>%
+		mutate(p = sum(sequence_type == 'candidate'),
+			   neg = sum(sequence_type == 'control'),
+		# calculate the rates
+				tpr = tp / p,
+				tnr = tn / neg,
+				fpr = fp / neg
+		) %>%
+		arrange(desc(log_odds))
+}
+
+roc <- calculate_roc(log_odds) %>%
+	dplyr::rename(model_type = motif_id)
+
+log_odds_cutoff <- -0.3
+auc <- roc %$% tpr %>% mean
+```
+
+```{r check_roc_when_ordering_by_length, echo =F, fig.width = 7.5, fig.height = 7.5}
+roc_length <- length_dist_data %>%
+	filter(sequence_type == 'candidate' | sequence_type == 'control') %>%
+	arrange(desc(width)) %>%
+	mutate(tp = cumsum(sequence_type == 'candidate'),
+		   fp = cumsum(sequence_type == 'control')) %>%
+	# reverse the log odds to find out the negative rates
+	arrange(width) %>%
+	mutate(tn = cumsum(sequence_type == 'control'),
+		   fn = cumsum(sequence_type == 'candidate')) %>%
+	mutate(p = sum(sequence_type == 'candidate'),
+		   neg = sum(sequence_type == 'control'),
+	# calculate the rates
+			tpr = tp / p,
+			tnr = tn / neg,
+			fpr = fp / neg
+	) %>%
+	arrange(desc(width)) %>%
+	mutate(model_type = 'length')
+```
+
+```{r plot_roc_function, echo = F}
+plot_roc <- function(roc, grouping_variable = NA){
+	if(is.na(grouping_variable)){
+		gpl <- roc %>% ggplot(aes(fpr, tpr))
+	} else {
+		gpl <- roc %>% ggplot(aes_string('fpr', 'tpr', color = grouping_variable)) +
+			scale_color_manual(values = c(wes_palette(n=5, name='Zissou1'), 'black'))
+	}
+	
+	gpl +
+		geom_step() +
+		geom_abline(slope = 1, intercept = 0, color = 'grey', alpha = 0.8) +
+		#geom_label_repel(data=roc %>%
+		#					filter(log_odds > log_odds_cutoff) %>%
+		#					tail(1),
+		#				 aes(label=paste("log-odds threshold: ", log_odds_cutoff, "\n",
+		#								 "sensitivity:", round(tpr, 3), " (", tp, "TP out of", p, "P)\n",
+		#								 "specificity:", round(1-fpr, 3), " (", fp, "FP out of", neg, "N)")),
+		#				 ylim = c(0.87, NA)) +
+		#geom_point(data = roc %>% filter(log_odds > log_odds_cutoff) %>% tail(1), color = 'red', size = 2) +
+		#annotate(geom='text', x = 0.25, y = 0.5, label = paste0("AUC=", round(auc, 3))) +
+		scale_y_continuous(expand = c(0,0)) +
+		scale_x_continuous(expand = c(0,0)) +
+		ggtitle('ROC curve of log-odds score for m6A target prediction') +
+		coord_fixed()
+}
+
+bind_rows(roc, roc_length) %>%
+	plot_roc(grouping_variable = 'model_type')
+
+ggsave('figures/tmp.png')
+```
+
+Using a log-odds cutoff of 0.1 we achieve almost 90% specificity, with 59% sensitivity. This means that with this cutoff, 9/10 molecules will be indeed methylated, even if we don't identify all the methylated molecules.
+
+If we use this cutoff genome-wide, we identify 2979 novel methylation candidates. There are several reasons why these might not have ended up in our candidate set. First of all, methylation might differ accross tissues and cell-types, so it might be that these novel candidates are simply not methylated in fly-heads.
+
+#### Novel methylation candidates
+
+```{r plot_novel_candidate_abundance, echo = F, fig.width = 9, fig.height = 4}
+log_odds <- log_odds %>%
+	mutate(sequence_type = replace(sequence_type, log_odds > log_odds_cutoff & sequence_type == 'rest', 'novel_candidates'))
+
+n_novel_candidates <- log_odds %>% 
+	filter(sequence_type == 'novel_candidates') %>%
+	nrow
+
+joined_count_data <- esat_counts %>%
+	left_join(log_odds, by = 'gene_id') %>%
+	mutate(sequence_type = ifelse(is.na(sequence_type), 'rest', sequence_type))
+
+joined_count_data %>%
+	group_by(gene_id, condition, sequence_type) %>%
+	summarise(tpm = median(tpm)) %>%
+	ggplot(aes(sequence_type,tpm, fill = sequence_type)) +
+		geom_violin(alpha = 0.75) +
+		geom_boxplot(width=.1, position = 'dodge') +
+		scale_y_log10() +
+		scale_fill_manual(values = wes_palette('Royal1')) +
+		facet_wrap(~condition, ncol = 3) +
+		theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = 'bottom') +
+		labs(fill = '') +
+		ggtitle('Novel candidates are less abundant are less abundant',
+				subtitle = paste0('log_odds > ', log_odds_cutoff, ', n = ', n_novel_candidates)) 
+
+ggsave('figures/tmp.png', height = 6, width = 12)
+```
+
+```{r assign_sequence_type2_to_log_odds, echo =F}
+log_odds <- log_odds %>%
+	mutate(sequence_type2 = sequence_type,
+		   sequence_type2 = ifelse(sequence_type == 'candidate' & log_odds > log_odds_cutoff, 'true_positive', sequence_type2),
+		   sequence_type2 = ifelse(sequence_type == 'candidate' & log_odds <= log_odds_cutoff, 'false_negative', sequence_type2),
+		   sequence_type2 = ifelse(sequence_type == 'control' & log_odds > log_odds_cutoff, 'false_positive', sequence_type2),
+		   sequence_type2 = ifelse(sequence_type == 'control' & log_odds <= log_odds_cutoff, 'true_negative', sequence_type2)) %>%
+	right_join(length_dist_data %>% dplyr::select(-sequence_type), 'gene_id') %>%
+	mutate(sequence_type = ifelse(is.na(sequence_type), 'rest', sequence_type)) %>%
+	mutate(sequence_type2 = ifelse(is.na(sequence_type2), 'rest', sequence_type2))
+```
+
+```{r plot_sequence_type_by_length, echo = F}
+log_odds_n <- log_odds %>%
+	group_by(sequence_type2) %>%
+	summarise(count = n())
+
+log_odds %>%
+	ggplot(aes(sequence_type2, width, fill = sequence_type)) +
+		scale_fill_manual(values = wes_palette('BottleRocket2')) +
+		scale_x_discrete(labels = c('TP', 'FN', 'TN', 'FP', 'novel_c', 'rest'),
+						 limits = c('true_positive', 'false_negative', 'true_negative', 'false_positive', 'novel_candidates', 'rest')) +
+		geom_boxplot() +
+		annotation_logticks(sides = 'l') +
+		labs(x = '', y = 'length (nt)', fill = '') +
+		annotate(geom = 'text', y = 100000, x = log_odds_n$sequence_type2, label = paste0('n=',log_odds_n$count)) +
+		scale_y_log10(limits = c(100, 100000), breaks = c(300, 1000, 3000, 10000, 30000)) +
+		ggtitle('Motif based model captures long transcripts more likely')
+
+ggsave('figures/tmp.png')
+```
+
+
+### Try with shorter sequences
+
+```{r save_shorter_sequences, echo = F, eval = F}
+short_seq_root <- paste0(michela_m6a_root, 'data/sequences/candidates/short/') # 
+
+writeXStringSet(m6a_candidate_short_seq,
+			paste0(short_seq_root, 'm6a_candidates.fa'))
+
+writeXStringSet(control_short_seq,
+			paste0(short_seq_root, 'control_seqs.fa'))
+```
+
+## circRNA localisation
 
 ```{r load_fraction_find_circ_data, echo = F, include = F}
 fraction_samples <- fraction_counts %$%
 	experiment %>%
 	unique
 
-txdb <- makeTxDbFromGFF(paste0(root_dir, 'shared/annotations/dm6.gtf'))
-annot.file = paste0(root_dir, "shared/annotations/dm6.sqlite")
+txdb <- makeTxDbFromGFF(config$knowledge$annotations$dm6)
+annot.file = paste0(root_dir, "dm6.sqlite")
 
 saveDb(txdb, file = annot.file)
 
@@ -1488,65 +1884,67 @@ fraction_circs <- circs.se %>% resTable %>% as_tibble %>%
 	separate(observation, into = c('condition', 'replicate', 'observation'), sep = '[_]') %>%
 	filter(observation == 'circ', width > 50)
 
-m6a_host_circs <- fraction_circs %>%
-	full_join(gene2met, by = 'gene_id') %>%
-	# join with the number of input reads, so we can normalise
-	inner_join(fraction_reads, by = c('condition', 'replicate')) %>%
-	# normalise the valus to account for library size
-	mutate(norm_count = value / input_reads * 1e7) %>%
-	group_by(gene_id, condition, m6a_type) %>%
-	summarise(mnc = mean(norm_count))
-
-m6a_host_circs %>%
-	filter(condition %in% c('pel1', 'pel2', 'sup2')) %>%
-	ggplot(aes(condition, mnc, color = m6a_type)) +
-		geom_boxplot() +
-		facet_wrap(~condition) +
-		scale_y_log10()
+#m6a_host_circs <- fraction_circs %>%
+#	full_join(gene2met, by = 'gene_id') %>%
+#	# join with the number of input reads, so we can normalise
+#	inner_join(fraction_reads, by = c('condition', 'replicate')) %>%
+#	# normalise the valus to account for library size
+#	mutate(norm_count = value / input_reads * 1e7) %>%
+#	group_by(gene_id, condition, m6a_type) %>%
+#	summarise(mnc = mean(norm_count))
+#
+#m6a_host_circs %>%
+#	filter(condition %in% c('pel1', 'pel2', 'sup2')) %>%
+#	ggplot(aes(condition, mnc, color = m6a_type)) +
+#		geom_boxplot() +
+#		facet_wrap(~condition) +
+#		scale_y_log10()
 ```
 
 ```{r calculate_fraction_circ_abundance, echo = F}
 fraction_circ_abundance <- fraction_circs %>%
 	inner_join(fraction_reads, by = c('condition', 'replicate')) %>%
-	mutate(norm_count = value / input_reads * 1e7)
+	mutate(norm_count = value / input_reads * 1e6)
 
-fraction_circ_abundance %>%
-	ggplot(aes(norm_count, color = condition)) +
-		geom_density(adjust = 2) + 
-		scale_x_log10() +
-		scale_color_manual(values = wes_palette(n=5, name ='Darjeeling1')) +
-		ggtitle('circRNA abundance distribution similar between fractions')
-```
-
-```{r plot_correlations_between_fractions, echo = F}
-ticks <- c(0.1, 1, 10, 100)
-
-pl_in <- fraction_circ_abundance %>%
+fraction_circ_abundance <- fraction_circ_abundance %>%
 	group_by(chr, start, end, strand, condition) %>%
 	summarise(mnc = mean(norm_count)) %>%
-	filter(condition %in% c('pel1', 'pel2', 'sup2')) %>%
+	filter(condition %in% c('homog', 'pel1', 'pel2', 'sup2')) %>%
 	spread(condition, mnc) %>%
 	dplyr::rename(nuclei = pel1,
 				  synapses = pel2,
-				  cytoplasm = sup2)
+				  cytoplasm = sup2) %>%
+	gather('condition', 'abundance', homog:cytoplasm)
 
-pl1 <- pl_in %>%
-	ggplot(aes(cytoplasm, synapses)) +
-		geom_point(size = 0.7, alpha = 0.8) +
-		scale_x_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
-		scale_y_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
-		coord_fixed()
+fraction_circ_abundance %>%
+	ggplot(aes(abundance, color = condition)) +
+		geom_density(adjust = 2) + 
+		scale_x_log10() +
+		scale_color_manual(values = wes_palette(n=4, name ='Darjeeling1')) +
+		ggtitle('circRNA abundance distribution similar between fractions')
 
-pl2 <- pl_in %>%
-	ggplot(aes(nuclei, cytoplasm)) +
-		geom_point(size = 0.7, alpha = 0.8) +
-		scale_x_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
-		scale_y_log10(breaks = ticks, labels = ticks, limits = c(0.1, 100)) +
-		coord_fixed()
+ggsave('figures/tmp.png')
+```
 
-ttl <- ggdraw()  + draw_label('Localisation of circRNAs', fontface = 'bold')
-p <- plot_grid(pl1, pl2, ncol = 2)
-plot_grid(ttl, p, ncol = 1, rel_heights = c(0.1, 1))
+```{r plot_correlations_between_fractions, echo = F}
+pl_in <- fraction_circ_abundance %>%
+	group_by(chr, start, end, strand, condition) %>%
+	summarise(mna = mean(abundance)) %>%
+	spread(condition, mna)
+
+plot_circ_abundance <- function(abundance, x, y){
+	ticks <- c(0.01, 0.1, 1, 10, 100)
+
+	abundance %>%
+		ggplot(aes_string(x, y)) +
+			geom_point(size = 0.7, alpha = 0.8) +
+			scale_x_log10(breaks = ticks, labels = ticks, limits = c(0.01, 100)) +
+			scale_y_log10(breaks = ticks, labels = ticks, limits = c(0.01, 100)) +
+			coord_fixed()
+} 
+
+pl_in %>% plot_circ_abundance('synapses', 'cytoplasm') 
+ggsave(filename = 'figures/tmp.png')
 ```
 
 ---

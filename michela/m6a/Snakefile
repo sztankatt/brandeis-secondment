@@ -1,0 +1,68 @@
+sequences_root = 'data/sequences/'
+candidate_root =  sequences_root + 'candidates/{type}/'
+
+candidate_seq = {
+	'control': 'control_seqs.fa',
+	'control_tx': 'control_seqs_tx.fa',
+	'm6a_candidates': 'm6a_candidates.fa',
+	'm6a_candidates_tx': 'm6a_candidates_tx.fa'
+}
+
+shuffled_root = sequences_root + 'shuffled/'
+transcripts = shuffled_root + 'transcripts.fa'
+
+# prepend the path before each .fa file
+for seq in candidate_seq:
+	candidate_seq[seq] = candidate_root + candidate_seq[seq]
+
+## DREME
+dreme_out = 'data/dreme_out/{type}'
+
+## SHUFFLED SEQENCES
+shuffled_sequences_root = sequences_root + 'shuffled/'
+shuffled_sequences_pattern = shuffled_sequences_root + 'shuffled_{number}.fa'
+
+## FIMO
+fimo_out = 'data/fimo_out/{type}/{sequence}.tsv'
+fimo_sequence_in = sequences_root + 'shuffled/{sequence}.fa'
+fimo_command = "fimo --norc --thresh 1e-3"
+
+shuffle_n = 200
+
+rule all:
+	input:
+		#expand(shuffled_sequences_pattern, number = range(shuffle_n)),
+		expand(fimo_out, type = ['all', 'short'], sequence = ['transcripts'] + ['shuffled_' + str(x) for x in range(shuffle_n)]),
+		expand(dreme_out, type = ['all', 'short'])
+
+rule run_dreme:
+	input:
+		ctrl= candidate_seq['control'],
+		candidates= candidate_seq['m6a_candidates']
+	output:
+		directory(dreme_out)
+	shell:
+		'dreme-py3 -m 5 -norc -maxk 8 -dna -o {output} -n {input.ctrl} -p {input.candidates}'
+
+rule run_fimo:
+	input:
+		dreme= dreme_out,
+		sequences= fimo_sequence_in
+	params:
+		dreme_txt = dreme_out + '/dreme.txt'
+	output:
+		fimo_out
+	shell:
+		"""
+		{fimo_command} --text {params.dreme_txt} {input.sequences} > {output}
+		"""
+
+rule shuffle_mrna_all_tx:
+	input:
+		transcripts
+	output:
+		shuffled_sequences_pattern
+	shell:
+		"""
+		fasta-shuffle-letters -dna -k 2 -tag '' {input} {output}
+		"""

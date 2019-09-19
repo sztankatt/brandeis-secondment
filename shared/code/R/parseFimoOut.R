@@ -1,18 +1,10 @@
 library(readr)
 library(tidyverse)
 
-parseFimoOut <- function(fimo_out, gene_features, tx2gene, nbins = 30){
-	motifs <- read_table2(fimo_out) %>%
-		dplyr::rename(tx_id = sequence_name) %>%
+parseFimoOut <- function(fimo_table, feature_lengths, tx2gene, nbins = 30){
+	motifs <- fimo_table %>% 
 		mutate(start = as.integer(start))
-
-	feature_lengths <- gene_features %>%
-		dplyr::select(tx_id, fivep_start:cds_length) %>%
-		group_by(tx_id) %>%
-		summarise(threep = sum(threep_end - threep_start, na.rm =T),
-				  fivep = sum(fivep_end - fivep_start, na.rm=T),
-				  cds = max(cds_length))
-
+	
 	motif_coverage <- motifs %>%
 		dplyr::select(tx_id, start, motif_id) %>%
 		inner_join(tx2gene, by='tx_id') %>%
